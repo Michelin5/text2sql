@@ -7,7 +7,7 @@
 Как пользоваться giga_wrapper.py:
 
 ```python
-from giga_wrapper import giga_client, call_giga_api_wrapper
+from giga_wrapper import call_giga_api_wrapper
 
 call_giga_api_wrapper("сообщение", "системный промпт")
 ```
