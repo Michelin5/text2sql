@@ -5,10 +5,11 @@ import sqlite3
 import json
 import sqliteschema
 from openai import OpenAI
+import os
 #import matplotlib.pyplot as plt
 #import seaborn as sns
 
-
+#Загружаем данные из parquet файла
 population = pd.read_parquet('data/2_bdmo_population.parquet')
 
 print(population.head())
@@ -17,7 +18,7 @@ connection = sqlite3.connect('population.db')
 
 population.to_sql('population', connection, if_exists='replace', index=False)
 
-
+# Схема БД
 extractor = sqliteschema.SQLiteSchemaExtractor('population.db')
 
 print(type(json.dumps(extractor.fetch_database_schema_as_dict(), indent=4)))
@@ -28,6 +29,7 @@ print(
     )
 )
 
+# Функция для получения уникальных значений в столбцах
 def get_column_values_summary(df):
     summary = {}
     for column in df.columns:
@@ -40,176 +42,179 @@ column_values_summary = get_column_values_summary(population)
 
 print(json.dumps(column_values_summary, indent=4))
 
-sql_generation_prompt= f"""
-# SQLite Query Generation System Prompt
 
-## Core Objectives
-You are an expert SQL query generator specializing in SQLite database interactions. Your primary goals are to:
-- Generate precise, efficient, and secure SQLite queries
-- Optimize query performance
-- Ensure data integrity and security
-- Provide clear, readable, and maintainable SQL code
+system_prompt= f"""
+# # Система генерации SQL-запросов для SQLite
 
-## Query Generation Guidelines
+## Основные цели
+Вы являетесь экспертом в генерации SQL-запросов, специализирующимся на взаимодействии с базами данных SQLite. Ваши основные задачи:
+- Генерировать точные, эффективные и безопасные запросы SQLite
+- Оптимизировать производительность запросов
+- Обеспечивать целостность и безопасность данных
+- Предоставлять понятный, читаемый и поддерживаемый SQL-код
 
-### 1. Query Structure and Best Practices
-- Always use prepared statements to prevent SQL injection
-- Prefer parameterized queries over direct string concatenation
-- Use appropriate indexing strategies
-- Minimize the use of wildcard searches (LIKE '%value%')
-- Utilize SQLite's specific optimization techniques
+## Руководство по генерации запросов
 
-### 2. Schema and Data Type Considerations
-- Respect the defined schema and data types
-- Use appropriate type casting when necessary
-- Handle NULL values explicitly
-- Consider SQLite's dynamic typing, but maintain type consistency
+### 1. Структура запросов и лучшие практики
+- Всегда используйте подготовленные выражения (prepared statements) для предотвращения SQL-инъекций
+- Предпочитайте параметризованные запросы вместо прямой конкатенации строк
+- Используйте подходящие стратегии индексации
+- Минимизируйте использование поиска по шаблону с подстановочными знаками (LIKE '%значение%')
+- Применяйте специфические техники оптимизации SQLite
 
-### 3. Performance Optimization
-- Use EXPLAIN QUERY PLAN to analyze query performance
-- Avoid SELECT * - always specify exact columns needed
-- Use appropriate JOIN types (INNER, LEFT, etc.)
-- Leverage indexes for large datasets
-- Limit result sets when possible using LIMIT and OFFSET
+### 2. Учет схемы и типов данных
+- Уважайте определенную схему и типы данных
+- Используйте приведение типов, когда это необходимо
+- Явно обрабатывайте значения NULL
+- Учитывайте динамическую типизацию SQLite, но сохраняйте согласованность типов
 
-### 4. Security Precautions
-- Never trust user input directly
-- Use parameterized queries with ? placeholders
-- Validate and sanitize all input data
-- Implement role-based access control in queries
-- Avoid exposing sensitive database information
+### 3. Оптимизация производительности
+- Используйте EXPLAIN QUERY PLAN для анализа производительности запросов
+- Избегайте SELECT * — всегда указывайте конкретные нужные столбцы
+- Применяйте подходящие типы JOIN (INNER, LEFT и т.д.)
+- Используйте индексы для больших наборов данных
+- Ограничивайте результирующие наборы с помощью LIMIT и OFFSET, когда это возможно
 
-### 5. Common Query Patterns
-- Use EXISTS instead of IN for subqueries
-- Prefer INNER JOIN over multiple WHERE conditions
-- Use window functions for advanced analytics
-- Utilize Common Table Expressions (CTEs) for complex queries
+### 4. Меры безопасности
+- Никогда не доверяйте пользовательскому вводу напрямую
+- Используйте параметризованные запросы с заполнителями ?
+- Проверяйте и очищайте все входные данные
+- Реализуйте управление доступом на основе ролей в запросах
+- Избегайте раскрытия конфиденциальной информации о базе данных
 
-### 6. Error Handling and Validation
-- Check for potential NULL value issues
-- Handle potential constraint violations
-- Implement appropriate error catching mechanisms
-- Provide meaningful error messages without exposing system details
+### 5. Типичные шаблоны запросов
+- Используйте EXISTS вместо IN для подзапросов
+- Предпочитайте INNER JOIN множественным условиям WHERE
+- Применяйте оконные функции для сложной аналитики
+- Используйте общие табличные выражения (CTE) для сложных запросов
 
-## Specific SQLite Considerations
-- Leverage SQLite's UPSERT capabilities
-- Use appropriate TEXT, NUMERIC, INTEGER, REAL types
-- Utilize SQLite's foreign key constraints
-- Consider using WITHOUT ROWID for performance optimization
-- Be aware of SQLite's limitations with concurrent writes
+### 6. Обработка ошибок и валидация
+- Проверяйте возможные проблемы с NULL-значениями
+- Обрабатывайте потенциальные нарушения ограничений
+- Реализуйте подходящие механизмы перехвата ошибок
+- Предоставляйте понятные сообщения об ошибках, не раскрывая системные детали
 
-## Query Generation Process
-1. Analyze the specific data retrieval or manipulation requirement
-2. Review the database schema
-3. Determine the most efficient query strategy
-4. Write the query with clear, readable formatting
-5. Add comments explaining complex logic
-6. Validate the query against security and performance guidelines
+## Особенности SQLite
+- Используйте возможности UPSERT в SQLite
+- Применяйте подходящие типы TEXT, NUMERIC, INTEGER, REAL
+- Используйте ограничения внешних ключей SQLite
+- Рассмотрите использование WITHOUT ROWID для оптимизации производительности
+- Учитывайте ограничения SQLite при одновременной записи
 
-## Example Query Template
-```SELECT
-    column1,
-    column2
+## Процесс генерации запросов
+1. Проанализируйте конкретные требования к извлечению или изменению данных
+2. Изучите схему базы данных
+3. Определите наиболее эффективную стратегию запроса
+4. Напишите запрос с четким и читаемым форматированием
+5. Добавьте комментарии, объясняющие сложную логику
+6. Проверьте запрос на соответствие рекомендациям по безопасности и производительности
+
+## Пример шаблона запроса
+SELECT
+column1,
+column2
 FROM table_name
 WHERE condition = ?
 AND another_condition IS NOT NULL
 ORDER BY column1
 LIMIT ?;
-```
 
-## Recommended Tools and Validation
-- Use sqlite3 CLI for query testing
-- Leverage EXPLAIN QUERY PLAN
-- Utilize SQLite's built-in type checking
-- Consider using SQLite extension functions for complex operations
+## Рекомендуемые инструменты и валидация
+- Используйте sqlite3 CLI для тестирования запросов
+- Применяйте EXPLAIN QUERY PLAN
+- Используйте встроенную проверку типов SQLite
+- Рассмотрите использование расширений SQLite для сложных операций
 
-## Anti-Patterns to Avoid
-- Avoid multiple nested subqueries
-- Do not use heavy, unindexed LIKE searches
-- Prevent cartesian product joins
-- Do not ignore NULL handling
-- Avoid unnecessary table scans
+## Антипаттерны, которых следует избегать
+- Избегайте множественных вложенных подзапросов
+- Не используйте тяжелые, неиндексированные поиски LIKE
+- Предотвращайте декартовы произведения в соединениях
+- Не игнорируйте обработку NULL
+- Избегайте ненужного полного сканирования таблиц
 
-Do not start with '''sql.
-Do not make up new table and column names. Only use the tables available in the schema below.
-Use DISTINCT clause where applicable. Start directly with the query
+Не начинайте с '''sql.
+Не придумывайте новые имена таблиц и столбцов. Используйте только таблицы, доступные в схеме ниже.
+Используйте предложение DISTINCT, где это применимо. Начинайте непосредственно с запроса.
 
-
-SQL Schema:
+SQL-схема:
 {json.dumps(extractor.fetch_database_schema_as_dict(), indent=4)}
 
-## Column Values:
-These are the known values for each field (non-exhaustive, but accurate):
+## Значения столбцов:
+Это известные значения для каждого поля (не исчерпывающие, но точные):
 {json.dumps(column_values_summary, indent=4)}
 
-Examples:
+Примеры:
 SELECT * FROM stores WHERE stores_id = 325258;
-
 """
+
+# Set up your OpenAI API key
+giga_token = os.getenv("GIGACHAT_TOKEN")
+if giga_token is None:
+    raise ValueError("Переменная окружения GIGACHAT_TOKEN не установлена!")
+
+API_Key = giga_token
 
 
 # Set up your OpenAI API key
-API_Key = ''
+giga_token = os.getenv("GIGACHAT_TOKEN")
+if giga_token is None:
+    raise ValueError("Переменная окружения GIGACHAT_TOKEN не установлена!")
 
-def get_openai_response(system_prompt, user_prompt):
+API_Key = giga_token
+
+llm = GigaChat(
+    credentials=giga_token, 
+    verify_ssl_certs=False,
+    model="GigaChat-2-Max"  
+)
+
+
+def execute_sql_query(sql: str):
     try:
-        # Initialize the OpenAI client
-        client = OpenAI(
-            api_key=API_Key
-        )
-
-        # Send the completion request
-        response = client.chat.completions.create(
-            model="gpt-4o",  # You can change this to another model if needed
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        )
-
-        # Extract and return the response text
-        return response.choices[0].message.content.strip()
-
+        conn = sqlite3.connect('population.db')
+        result = pd.read_sql_query(sql, conn)
+        conn.close()
+        return result
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return None
+        return f"❌ Ошибка при выполнении SQL: {e}"
+
+def execute_sql_query(sql: str):
+    try:
+        conn = sqlite3.connect('population.db')
+        result = pd.read_sql_query(sql, conn)
+        conn.close()
+        return result
+    except Exception as e:
+        return f"❌ Ошибка при выполнении SQL: {e}"
+    
 
 
-question = "Дай мне список всех женщин возрастом ровно 20 лет с value 288.0"
-
-print(f'Вопрос: {question}')
-response = get_openai_response(sql_generation_prompt, question)
-print(response)
-
-connection = sqlite3.connect('population.db')
-
-cursor = connection.execute(response)
-
-print(cursor.fetchall())
-
-connection.close()
+def generate_sql(user_question: str) -> str:
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_question)
+    ])
+    sql = response.content.strip()
+    print(f"\n📜 Сгенерированный SQL-запрос:\n{sql}\n")
+    return sql
 
 
 
 
-
-# connection = sqlite3.connect('population.db')
-#
-# # cursor = connection.execute("""SELECT DISTINCT age, year, period, territory_id, value
-# # FROM population
-# # WHERE gender = 'Женщины';""")
-#
-# # cursor = connection.execute("""SELECT DISTINCT
-# #     territory_id,
-# #     year,
-# #     period,
-# #     age,
-# #     gender,
-# #     value
-# # FROM population
-# # WHERE age = '20'
-# # AND gender = 'Женщины';""")
-# #
-# # print(cursor.fetchall())
-#
-# connection.close()
+def ask_gigachat(user_question: str):
+    print(f"💬 Вопрос пользователя: {user_question}")
+    
+    sql = generate_sql(user_question)
+    
+    if not sql:
+        return "❌ Не удалось сгенерировать SQL-запрос."
+    
+    result = execute_sql_query(sql)
+    
+    if isinstance(result, pd.DataFrame):
+        if result.empty:
+            return "🔍 Результаты не найдены."
+        else:
+            return result
+    else:
+        return result

@@ -1,0 +1,9 @@
+langchain-core
+langchain-community
+langchain-gigachat
+pandas
+sqliteschema
+simplesqlite
+openai
+pyarrow
+flask
