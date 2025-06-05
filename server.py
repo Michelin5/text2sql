@@ -4,8 +4,18 @@ from flask_cors import CORS # Для разрешения запросов с д
 import duckdb
 import pandas as pd
 import os
+import json
 
 from giga_wrapper import giga_client, call_giga_api_wrapper
+from agents import (
+    agent1_rephraser,
+    agent2_planner,
+    agent3_sql_generator,
+    agent_sql_validator,
+    agent_sql_fixer,
+    agent4_answer_generator
+)
+from duckdb_utils import setup_duckdb, execute_duckdb_query, duckdb_con
 
 # --- Конфигурация Flask ---
 app = Flask(__name__)
@@ -18,8 +28,6 @@ PATH_MIGRATION = 'data/3_bdmo_migration.parquet'
 PATH_SALARY = 'data/4_bdmo_salary.parquet'
 PATH_CONNECTIONS = 'data/5_connection.parquet'
 PATH_MO_DIRECTORY = 'data/t_dict_municipal_districts.xlsx'
-
-duckdb_con = None
 
 def setup_duckdb():
     global duckdb_con
@@ -143,54 +151,6 @@ TABLE_CONTEXT = """
 
 
 
-# --- Агенты ---
-def agent1_rephraser(user_prompt):
-    system_instruction = "Ты — ИИ-ассистент. Переформулируй запрос пользователя в формальный, четкий вопрос для анализа данных на русском языке. Вывод должен содержать ТОЛЬКО переформулированный вопрос."
-    return call_giga_api_wrapper(user_prompt, system_instruction)
-
-def agent2_planner(formal_prompt):
-    system_instruction = (
-        "Ты — ИИ-планировщик. На основе формального запроса создай краткий, пронумерованный пошаговый план на русском языке. "
-        "Используй TABLE_CONTEXT. Вывод должен содержать ТОЛЬКО план. НЕ ВКЛЮЧАЙ SQL."
-        f"\n\n{TABLE_CONTEXT}"
-    )
-    return call_giga_api_wrapper(formal_prompt, system_instruction)
-
-def agent3_sql_generator(plan):
-    system_instruction = (
-        "Ты — эксперт по генерации SQL. На основе плана и TABLE_CONTEXT сгенерируй SQL-запрос. "
-        "ВАЖНО: ВСЕГДА используй алиасы для таблиц (например, `p` для `population`, `ma` для `market_access`, `md` для `mo_directory`, `s` для `salary`) и ВСЕГДА квалифицируй КАЖДОЕ имя столбца этим алиасом (например, `p.year`, `md.territory_id`, `s.value` для зарплаты). Это КРИТИЧЕСКИ важно для избежания ошибок неоднозначности, особенно для `territory_id` и `year`. "
-        "КРАЙНЕ ВАЖНО: Если план включает извлечение `territory_id` или данных, связанных с территориями, ты ОБЯЗАН включить в SELECT столбец `md.municipal_district_name` и выполнить JOIN с представлением `mo_directory` (алиас `md`) по `md.territory_id = relevant_table_alias.territory_id` для отображения названий МО. "
-        "При указании условий на колонку `year` (например, `WHERE p.year = 2024`), убедись, что таблица, к которой относится `year` (например, `population` с алиасом `p`), корректно включена в `FROM` или `JOIN` часть запроса и колонка `year` квалифицирована (например, `p.year`). "
-        "Для таблицы `salary` (алиас `s`), фактическое значение зарплаты находится в колонке `s.value`. При расчете среднего используй `AVG(s.value)`. "
-        "Вывод должен быть ТОЛЬКО SQL-запрос в блоке ```sql ... ```."
-        f"\n\n{TABLE_CONTEXT}"
-    )
-    sql_query_block = call_giga_api_wrapper(plan, system_instruction)
-    if sql_query_block and "```sql" in sql_query_block:
-        try:
-            return sql_query_block.split("```sql")[1].split("```")[0].strip()
-        except IndexError: return sql_query_block 
-    elif sql_query_block and sql_query_block.strip().upper().startswith("SELECT"):
-        return sql_query_block.strip()
-    return sql_query_block
-
-def agent4_answer_generator(sql_result_df, initial_user_prompt):
-    if sql_result_df is None: return "К сожалению, не удалось получить данные из-за ошибки SQL."
-    if sql_result_df.empty: return "По вашему запросу данные не найдены."
-    
-    data_as_string = sql_result_df.to_markdown(index=False) if not sql_result_df.empty else "Данные отсутствуют."
-    system_instruction = (
-        "Ты — ИИ-ассистент, объясняющий результаты анализа данных. "
-        "Тебе дан исходный вопрос пользователя и данные (результат SQL в Markdown). "
-        "Сформулируй ясный ответ на русском языке. Если видишь NaN, укажи, что данные отсутствуют."
-    )
-    prompt_for_llm = (
-        f"Исходный вопрос пользователя: \"{initial_user_prompt}\"\n\n"
-        f"Данные для ответа (Markdown):\n{data_as_string}\n\nОтвет:"
-    )
-    return call_giga_api_wrapper(prompt_for_llm, system_instruction)
-
 # --- API Эндпоинт ---
 @app.route('/process_query', methods=['POST'])
 def process_query():
@@ -209,24 +169,103 @@ def process_query():
 
         # Запуск конвейера агентов
         formal_request = agent1_rephraser(user_prompt)
+        print(f"Формальный запрос: {formal_request}")
         plan = agent2_planner(formal_request)
-        sql_query = agent3_sql_generator(plan)
+        print(f"План: {plan}")
+        
+        generated_sql_query = agent3_sql_generator(plan)
+        print(f"Сгенерированный SQL: {generated_sql_query}")
+
+        current_sql_query = generated_sql_query
+        sql_validation_log = []
+        
+        if current_sql_query and "SELECT" in current_sql_query.upper():
+            validation_result = agent_sql_validator(current_sql_query, plan)
+            sql_validation_log.append({
+                "query_source": "generator",
+                "sql": current_sql_query,
+                "validation": validation_result
+            })
+            print(f"Результат валидации: {validation_result}")
+            if not validation_result.get("is_valid"):
+                if validation_result.get("corrected_sql"):
+                    print(f"Валидатор предложил исправленный SQL: {validation_result.get('corrected_sql')}")
+                    current_sql_query = validation_result.get("corrected_sql")
+                else:
+                    # Если валидатор не смог исправить, можно либо остановиться, либо пробовать выполнить как есть
+                    print(f"Валидация не пройдена, исправление не предложено: {validation_result.get('message')}")
+                    # Для простоты, пока будем пытаться выполнить то, что сгенерировано, если валидатор не дал исправление
+                    # В более сложном сценарии здесь можно вернуть ошибку пользователю
         
         sql_results_df = None
+        sql_error_message = None
+        MAX_FIX_ATTEMPTS = 2 # Максимум 1 попытка исправления + исходный запрос
+        attempt_count = 0
+
+        while attempt_count < MAX_FIX_ATTEMPTS and current_sql_query and "SELECT" in current_sql_query.upper():
+            attempt_count += 1
+            print(f"Попытка выполнения SQL ({attempt_count}/{MAX_FIX_ATTEMPTS}): {current_sql_query}")
+            try:
+                # Используем временную переменную для отлова ошибки именно от execute_duckdb_query
+                temp_df = execute_duckdb_query(current_sql_query) 
+                sql_results_df = temp_df # Присваиваем только если нет ошибки
+                sql_error_message = None # Сбрасываем ошибку если успешно
+                print("SQL выполнен успешно.")
+                break # Выходим из цикла если успешно
+            except Exception as e: # Ловим ошибку прямо здесь
+                sql_error_message = str(e)
+                print(f"[ОШИБКА DuckDB Query] {sql_error_message}")
+                sql_results_df = None # Убедимся что df пустой при ошибке
+
+            if sql_results_df is None and sql_error_message and attempt_count < MAX_FIX_ATTEMPTS:
+                print("Попытка исправить SQL...")
+                fixed_sql = agent_sql_fixer(current_sql_query, sql_error_message, plan)
+                sql_validation_log.append({
+                    "query_source": "fixer_attempt_" + str(attempt_count),
+                    "original_sql": current_sql_query,
+                    "error": sql_error_message,
+                    "suggested_fix": fixed_sql
+                })
+                if fixed_sql:
+                    print(f"Фиксер предложил новый SQL: {fixed_sql}")
+                    current_sql_query = fixed_sql
+                    # После фиксера можно снова прогнать через валидатор, если есть желание
+                    validation_after_fix = agent_sql_validator(current_sql_query, plan)
+                    sql_validation_log.append({
+                        "query_source": "validator_after_fixer_attempt_" + str(attempt_count),
+                        "sql": current_sql_query,
+                        "validation": validation_after_fix
+                    })
+                    print(f"Результат валидации после исправления: {validation_after_fix}")
+                    if not validation_after_fix.get("is_valid") and validation_after_fix.get("corrected_sql"):
+                        current_sql_query = validation_after_fix.get("corrected_sql") # Применяем исправление от валидатора
+                    elif not validation_after_fix.get("is_valid"):
+                        print(f"Валидация после исправления не пройдена, новый SQL от валидатора не предложен: {validation_after_fix.get('message')}")
+                        # Решаем, что делать - либо прервать, либо пробовать выполнить предложенное фиксером
+                        # Пока что будем пробовать выполнить то, что предложил фиксер, даже если валидатор не доволен
+                else:
+                    print("Фиксер не смог предложить исправление.")
+                    break # Выходим, если фиксер не помог
+            elif sql_results_df is not None: # Если запрос выполнился после какой-то из попыток
+                break
+            else: # Если sql_query пустой или не SELECT, или превышены попытки
+                break
+        
         sql_results_str = "SQL-запрос не был выполнен или не вернул данных."
-        if sql_query and "SELECT" in sql_query.upper() and duckdb_con:
-            sql_results_df = execute_duckdb_query(sql_query)
-            if sql_results_df is not None:
-                sql_results_str = sql_results_df.to_markdown(index=False) if not sql_results_df.empty else "Запрос SQL выполнен, но данные не найдены."
-            else:
-                sql_results_str = "Ошибка при выполнении SQL-запроса (подробности см. в логах сервера)."
+        if sql_results_df is not None:
+            sql_results_str = sql_results_df.to_markdown(index=False) if not sql_results_df.empty else "Запрос SQL выполнен, но данные не найдены."
+        elif sql_error_message:
+             sql_results_str = f"Ошибка при выполнении SQL-запроса: {sql_error_message}"
         
         final_answer = agent4_answer_generator(sql_results_df, user_prompt)
 
         return jsonify({
             "formal_request": formal_request,
             "plan": plan,
-            "sql_query": sql_query,
+            "generated_sql_query": generated_sql_query,
+            "executed_sql_query": current_sql_query if sql_results_df is not None else generated_sql_query, # Показываем последний выполненный или исходный
+            "sql_validation_log": sql_validation_log,
+            "sql_error": sql_error_message if sql_results_df is None else None,
             "sql_results_str": sql_results_str,
             "final_answer": final_answer
         })
