@@ -2,8 +2,10 @@ langchain-core
 langchain-community
 langchain-gigachat
 pandas
-sqliteschema
-simplesqlite
-openai
 pyarrow
 flask
+duckdb
+python-dotenv
+flask-cors
+openpyxl
+tabulate
