@@ -1,6 +1,6 @@
 # app.py
 from flask import Flask, request, jsonify
-from flask_cors import CORS # Для разрешения запросов с другого порта (если фронтенд отдельно)
+from flask_cors import CORS
 import duckdb
 import pandas as pd
 import os
@@ -19,7 +19,26 @@ from duckdb_utils import setup_duckdb, execute_duckdb_query, duckdb_con
 
 # --- Конфигурация Flask ---
 app = Flask(__name__)
-CORS(app) # Разрешает CORS-запросы. Полезно при локальной разработке.
+CORS(app)
+
+# --- Конфигурация автоматического анализа аномалий ---
+ANOMALY_AUTO_CONFIG = {
+    "intent_keywords": [
+        'аномали', 'выброс', 'необычн', 'странн', 'подозрительн', 'отклонен',
+        'максимальн', 'минимальн', 'экстремальн', 'качество данных', 'проблем',
+        'ошибк', 'зарплат', 'миграци', 'населен', 'сравни', 'динамик', 'тренд',
+        'анализ', 'исследован', 'различи', 'распределен', 'выявить', 'найти'
+    ],
+    "data_criteria": {
+        "min_records": 10,
+        "min_numeric_columns": 1,
+        "min_regions": 3,
+        "enable_for_salary": True,
+        "enable_for_aggregations": True,
+        "enable_for_time_series": True
+    },
+    "auto_threshold": 2
+}
 
 # --- Настройка DuckDB ---
 PATH_MARKET_ACCESS = 'data/1_market_access.parquet'
@@ -86,15 +105,12 @@ def setup_duckdb():
                 print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось создать представление 'mo_directory' из CSV файла '{PATH_MO_DIRECTORY}': {e}")
         else:
             print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось определить тип файла для справочника МО по имени: {PATH_MO_DIRECTORY}.")
-
-
+        
         if not mo_directory_created_successfully:
             print("[КРИТИЧЕСКАЯ ОШИБКА] Представление 'mo_directory' НЕ создано.")
             return False
         if not all_parquet_views_created:
             print("[ПРЕДУПРЕЖДЕНИЕ] Не все представления для Parquet-файлов были успешно созданы.")
-            # Решите, является ли это критической ошибкой для вашего приложения
-            # return False 
         return True
     except Exception as e:
         print(f"[ОШИБКА DuckDB] Не удалось инициализировать DuckDB на верхнем уровне: {e}")
@@ -111,7 +127,21 @@ def execute_duckdb_query(sql_query):
         print(f"[ОШИБКА DuckDB Query] {e}")
         return None
 
+# --- Настройка GigaChat ---
+GIGA_CREDENTIALS = os.environ.get("GIGACHAT_TOKEN")
+giga_client = None
+anomaly_agent = None
 
+try:
+    giga_client = GigaChat(credentials=GIGA_CREDENTIALS, verify_ssl_certs=False, model="GigaChat-2-Max")
+    print("Клиент GigaChat успешно инициализирован (Flask app).")
+    
+    # Инициализируем агента анализа аномалий
+    anomaly_agent = AnomalyDetectorAgent(giga_client, verbose=True)
+    print("🔍 Агент анализа аномалий инициализирован.")
+    
+except Exception as e:
+    print(f"[ОШИБКА GigaChat Init] {e}")
 
 TABLE_CONTEXT = """
 Тебе доступны следующие таблицы (представления DuckDB) и их ключевые столбцы. При генерации SQL всегда используй алиасы для таблиц (например, `p` для `population`, `ma` для `market_access`, `md` для `mo_directory`, `s` для `salary`, `mig` для `migration`, `c` для `connections`) и квалифицируй ВСЕ имена столбцов этими алиасами (например, `p.year`, `md.territory_id`, `s.value`). Это особенно важно для столбцов `territory_id` и `year`, так как они могут встречаться в нескольких таблицах.
@@ -162,12 +192,22 @@ def process_query():
     try:
         data = request.get_json()
         user_prompt = data.get('user_prompt')
+        force_anomaly_analysis = data.get('force_analyze_anomalies', False)
+        
         if not user_prompt:
             return jsonify({"error": "user_prompt не предоставлен"}), 400
 
-        print(f"\nПолучен запрос от пользователя: {user_prompt}")
+        print(f"\n{'='*60}")
+        print(f"📨 Получен запрос от пользователя: {user_prompt}")
+        if force_anomaly_analysis:
+            print("🔒 Принудительный анализ аномалий включен")
+
+        # ШАГ 0: Анализ намерений для определения необходимости анализа аномалий
+        auto_anomaly_needed = agent0_intent_analyzer(user_prompt)
+        print(f"🧠 Агент анализа намерений: анализ аномалий {'НУЖЕН' if auto_anomaly_needed else 'НЕ НУЖЕН'}")
 
         # Запуск конвейера агентов
+        print("\n🤖 Запуск мультиагентной системы...")
         formal_request = agent1_rephraser(user_prompt)
         print(f"Формальный запрос: {formal_request}")
         plan = agent2_planner(formal_request)
@@ -258,8 +298,13 @@ def process_query():
              sql_results_str = f"Ошибка при выполнении SQL-запроса: {sql_error_message}"
         
         final_answer = agent4_answer_generator(sql_results_df, user_prompt)
+        print("✅ Агент 4 (генерация ответа) завершен")
+        
+        # Добавляем результаты анализа аномалий к финальному ответу
+        if anomaly_analysis and anomaly_analysis.get("anomalies_found"):
+            final_answer += f"\n\n🚨 **Автоматический анализ аномалий:**\n{anomaly_analysis['message']}"
 
-        return jsonify({
+        response_data = {
             "formal_request": formal_request,
             "plan": plan,
             "generated_sql_query": generated_sql_query,
@@ -267,16 +312,89 @@ def process_query():
             "sql_validation_log": sql_validation_log,
             "sql_error": sql_error_message if sql_results_df is None else None,
             "sql_results_str": sql_results_str,
-            "final_answer": final_answer
-        })
+            "final_answer": final_answer,
+            "auto_anomaly_analysis": {
+                "intent_based": auto_anomaly_needed,
+                "data_based": data_based_anomaly_needed,
+                "executed": anomaly_analysis is not None,
+                "forced": force_anomaly_analysis
+            }
+        }
+        
+        # Добавляем результаты анализа аномалий в ответ
+        if anomaly_analysis:
+            response_data["anomaly_analysis"] = anomaly_analysis
+
+        print(f"✅ Обработка завершена успешно")
+        print("="*60)
+        return jsonify(response_data)
 
     except Exception as e:
-        print(f"Ошибка в /process_query: {e}")
+        print(f"❌ Ошибка в /process_query: {e}")
         return jsonify({"error": str(e)}), 500
+
+# --- Эндпоинт для настройки конфигурации ---
+@app.route('/configure_anomaly', methods=['POST'])
+def configure_anomaly():
+    """Настройка параметров автоматического анализа аномалий"""
+    try:
+        config_updates = request.get_json()
+        
+        # Обновляем конфигурацию
+        if 'intent_keywords' in config_updates:
+            ANOMALY_AUTO_CONFIG['intent_keywords'].extend(config_updates['intent_keywords'])
+        
+        if 'data_criteria' in config_updates:
+            ANOMALY_AUTO_CONFIG['data_criteria'].update(config_updates['data_criteria'])
+        
+        if 'auto_threshold' in config_updates:
+            ANOMALY_AUTO_CONFIG['auto_threshold'] = config_updates['auto_threshold']
+        
+        return jsonify({
+            "message": "Конфигурация автоматического анализа аномалий обновлена",
+            "current_config": ANOMALY_AUTO_CONFIG
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- Эндпоинт для получения информации о системе ---
+@app.route('/system_info', methods=['GET'])
+def system_info():
+    """Информация о доступных агентах и конфигурации"""
+    return jsonify({
+        "agents": [
+            {"id": 0, "name": "Intent Analyzer", "description": "Анализ намерений пользователя для определения необходимости анализа аномалий"},
+            {"id": 1, "name": "Rephraser", "description": "Переформулировка запросов"},
+            {"id": 2, "name": "Planner", "description": "Планирование анализа"},
+            {"id": 3, "name": "SQL Generator", "description": "Генерация SQL-запросов"},
+            {"id": 4, "name": "Answer Generator", "description": "Генерация ответов"},
+            {"id": 5, "name": "Anomaly Detector", "description": "Обнаружение аномалий (отдельный файл)"}
+        ],
+        "anomaly_config": ANOMALY_AUTO_CONFIG,
+        "database_status": duckdb_con is not None,
+        "gigachat_status": giga_client is not None,
+        "anomaly_agent_status": anomaly_agent is not None,
+        "version": "2.1 - Модульная архитектура с полной отладкой"
+    })
 
 if __name__ == '__main__':
     if setup_duckdb(): 
+        print("\n🚀 Мультиагентная система с модульной архитектурой запущена!")
+        print("📋 Доступные агенты:")
+        print("  0. 🧠 Агент анализа намерений (автоматическое определение необходимости анализа аномалий)")
+        print("  1. 📝 Агент переформулировки запросов")
+        print("  2. 📋 Агент планирования")
+        print("  3. 💾 Агент генерации SQL")
+        print("  4. 💬 Агент генерации ответов")
+        print("  5. 🔍 Агент анализа аномалий (отдельный модуль)")
+        print("\n⚙️ Автоматические возможности:")
+        print("  - Анализ намерений пользователя для определения необходимости поиска аномалий")
+        print("  - Анализ характеристик данных для принятия решения о запуске детектора аномалий")
+        print("  - Мультиметодное обнаружение аномалий (Z-Score, IQR, Isolation Forest)")
+        print("  - LLM-интерпретация результатов анализа аномалий")
+        print("  - Подробная диагностика и отладка процесса принятия решений")
+        print("\n🌐 Flask приложение готово к работе на порту 5001!")
         app.run(debug=True, port=5001) 
     else:
-        print("Не удалось запустить Flask приложение из-за ошибки инициализации DuckDB.")
+        print("❌ Не удалось запустить Flask приложение из-за ошибки инициализации DuckDB.")
 
