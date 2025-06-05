@@ -4,11 +4,8 @@ from flask_cors import CORS # Для разрешения запросов с д
 import duckdb
 import pandas as pd
 import os
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_gigachat.chat_models import GigaChat
-from dotenv import load_dotenv
 
-load_dotenv()
+from giga_wrapper import giga_client, call_giga_api_wrapper
 
 # --- Конфигурация Flask ---
 app = Flask(__name__)
@@ -106,14 +103,7 @@ def execute_duckdb_query(sql_query):
         print(f"[ОШИБКА DuckDB Query] {e}")
         return None
 
-# --- Настройка GigaChat ---
-GIGA_CREDENTIALS = os.environ.get("GIGACHAT_TOKEN")
-giga_client = None
-try:
-    giga_client = GigaChat(credentials=GIGA_CREDENTIALS, verify_ssl_certs=False, model="GigaChat-2-Max")
-    print("Клиент GigaChat успешно инициализирован (Flask app).")
-except Exception as e:
-    print(f"[ОШИБКА GigaChat Init] {e}")
+
 
 TABLE_CONTEXT = """
 Тебе доступны следующие таблицы (представления DuckDB) и их ключевые столбцы. При генерации SQL всегда используй алиасы для таблиц (например, `p` для `population`, `ma` для `market_access`, `md` для `mo_directory`, `s` для `salary`, `mig` для `migration`, `c` для `connections`) и квалифицируй ВСЕ имена столбцов этими алиасами (например, `p.year`, `md.territory_id`, `s.value`). Это особенно важно для столбцов `territory_id` и `year`, так как они могут встречаться в нескольких таблицах.
@@ -151,17 +141,7 @@ TABLE_CONTEXT = """
 ПРИМЕЧАНИЕ ДЛЯ ГЕНЕРАЦИИ SQL: При JOIN `mo_directory` с другими таблицами, используй `md.territory_id = other_alias.territory_id`. Убедись, что типы данных для `territory_id` совпадают (все `territory_id` в представлениях должны быть VARCHAR, что уже учтено при создании представлений). Всегда включай `md.municipal_district_name` в SELECT, если требуются названия территорий. Для строковых литералов в SQL используй одинарные кавычки. Убедись, что любая колонка, используемая в WHERE, SELECT, GROUP BY или ORDER BY, доступна из таблиц в FROM/JOIN и правильно квалифицирована алиасом.
 """
 
-def call_giga_api_wrapper(prompt_text, system_instruction):
-    if giga_client is None: return "[ОШИБКА API] Клиент GigaChat не инициализирован."
-    print(f"\nВызов GigaChat: Системная инструкция (начало): {system_instruction[:100]}... Промпт: {prompt_text[:100]}...")
-    try:
-        messages = [SystemMessage(content=system_instruction), HumanMessage(content=prompt_text)]
-        res = giga_client.invoke(messages)
-        print(f"GigaChat ответ (начало): {res.content[:100]}...")
-        return res.content.strip()
-    except Exception as e:
-        print(f"Ошибка вызова GigaChat API: {e}")
-        return f"[ОШИБКА API] {e}"
+
 
 # --- Агенты ---
 def agent1_rephraser(user_prompt):
