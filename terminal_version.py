@@ -7,6 +7,7 @@ import sqliteschema
 import os
 import argparse
 import sys
+from dotenv import load_dotenv
 
 class SQLAssistant:
     def __init__(self, data_path='data/2_bdmo_population.parquet', db_path='population.db'):
@@ -46,6 +47,7 @@ class SQLAssistant:
     
     def setup_llm(self):
         """Настройка LLM"""
+        load_dotenv()
         giga_token = os.getenv("GIGACHAT_TOKEN")
         if giga_token is None:
             raise ValueError("❌ Переменная окружения GIGACHAT_TOKEN не установлена!")
