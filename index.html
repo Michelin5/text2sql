@@ -3,232 +3,92 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GigaChat Аналитический Помощник</title>
+    <title>GigaChat Advanced Analytics (Streaming)</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-        body {
-            background-color: #f8fafc;
-            color: #1e293b;
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        /* All the same CSS styles from the previous improved version go here... */
+        :root {
+            --background: 0 0% 100%; --foreground: 222.2 84% 4.9%; --card: 0 0% 100%; --card-foreground: 222.2 84% 4.9%; --popover: 0 0% 100%; --popover-foreground: 222.2 84% 4.9%; --primary: 222.2 47.4% 11.2%; --primary-foreground: 210 40% 98%; --secondary: 210 40% 96.1%; --secondary-foreground: 222.2 47.4% 11.2%; --muted: 210 40% 96.1%; --muted-foreground: 215.4 16.3% 46.9%; --accent: 210 40% 96.1%; --accent-foreground: 222.2 47.4% 11.2%; --destructive: 0 84.2% 60.2%; --destructive-foreground: 210 40% 98%; --border: 214.3 31.8% 91.4%; --input: 214.3 31.8% 91.4%; --ring: 222.2 84% 4.9%; --radius: 0.5rem;
         }
-        .app-container {
-            max-width: 1200px;
-            margin: 2rem auto;
-            padding: 0 1rem;
-        }
-        h1 {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: #0f172a;
-            margin-bottom: 2rem;
-            text-align: center;
-        }
-        .input-section {
-            background: white;
-            padding: 1.5rem;
-            border-radius: 0.75rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            margin-bottom: 2rem;
-        }
-        textarea {
-            width: 100%;
-            min-height: 100px;
-            padding: 0.75rem;
-            border: 1px solid #e2e8f0;
-            border-radius: 0.5rem;
-            margin-top: 0.5rem;
-            font-size: 1rem;
-            resize: vertical;
-        }
-        button {
-            background-color: #3b82f6;
-            color: white;
-            padding: 0.75rem 1.5rem;
-            border-radius: 0.5rem;
-            font-weight: 500;
-            transition: background-color 0.2s;
-        }
-        button:hover {
-            background-color: #2563eb;
-        }
-        button:disabled {
-            background-color: #94a3b8;
-            cursor: not-allowed;
-        }
-        .collapsible-box {
-            background: white;
-            border-radius: 0.75rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            margin-bottom: 1rem;
-            overflow: hidden;
-        }
-        .agent-title {
-            background-color: #f1f5f9;
-            padding: 1rem;
-            font-weight: 600;
-            color: #0f172a;
-            border-bottom: 1px solid #e2e8f0;
-        }
-        .agent-output {
-            padding: 1rem;
-            color: #334155;
-            line-height: 1.5;
-        }
-        .loading-spinner {
-            border: 3px solid #f3f4f6;
-            border-top: 3px solid #3b82f6;
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .error-message {
-            background-color: #fee2e2;
-            color: #b91c1c;
-            padding: 0.75rem;
-            border-radius: 0.5rem;
-            margin-top: 1rem;
-        }
-        .collapsible-header {
-            cursor: pointer;
-            user-select: none;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            transition: background-color 0.2s;
-        }
-        .collapsible-header:hover {
-            background-color: #e2e8f0;
-        }
-        .collapsible-arrow {
-            transition: transform 0.2s;
-            color: #64748b;
-        }
-        .collapsed .collapsible-arrow {
-            transform: rotate(-90deg);
-        }
-        .collapsed .collapsible-content {
-            display: none;
-        }
-        .collapsible-content {
-            margin-top: 0.5rem;
-        }
-        .sql-error-message {
-            color: #ef4444;
-            background-color: #fee2e2;
-            border: 1px solid #fecaca;
-            padding: 0.75rem;
-            border-radius: 0.5rem;
-            margin-top: 0.75rem;
-            font-size: 0.95em;
-        }
-        .executed-sql {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 0.5rem;
-            padding: 0.75rem;
-            margin-top: 0.75rem;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.95em;
-            overflow-x: auto;
-        }
-        .final-answer {
-            background: white;
-            padding: 1.5rem;
-            border-radius: 0.75rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            margin-top: 1rem;
-        }
+        body { background-color: hsl(var(--secondary)); color: hsl(var(--foreground)); font-family: 'Inter', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+        .card { background-color: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
+        .btn { display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius); font-weight: 500; padding: 0.625rem 1rem; transition: background-color 0.2s, color 0.2s; background-color: hsl(var(--primary)); color: hsl(var(--primary-foreground)); outline: none; }
+        .btn:hover { background-color: hsl(var(--primary) / 0.9); }
+        .btn:focus-visible { box-shadow: 0 0 0 2px hsl(var(--ring)); }
+        .btn:disabled { background-color: hsl(var(--secondary)); color: hsl(var(--muted-foreground)); cursor: not-allowed; }
+        textarea { background-color: hsl(var(--background)); border: 1px solid hsl(var(--input)); border-radius: var(--radius); width: 100%; min-height: 100px; padding: 0.75rem; font-size: 1rem; resize: vertical; transition: box-shadow 0.2s; }
+        textarea:focus { outline: none; box-shadow: 0 0 0 2px hsl(var(--ring)); }
+        details { border-bottom: 1px solid hsl(var(--border)); }
+        details:first-of-type { border-top: 1px solid hsl(var(--border)); }
+        summary { display: flex; align-items: center; justify-content: space-between; padding: 1rem; cursor: pointer; user-select: none; font-weight: 500; list-style: none; transition: background-color 0.1s; }
+        summary:hover { background-color: hsl(var(--accent)); }
+        summary::-webkit-details-marker { display: none; }
+        summary .chevron { transition: transform 0.2s ease-in-out; color: hsl(var(--muted-foreground)); }
+        details[open] > summary .chevron { transform: rotate(90deg); }
+        .accordion-content { padding: 0 1rem 1rem 1rem; color: hsl(var(--muted-foreground)); line-height: 1.6; font-size: 0.95rem; }
+        .spinner { border: 2px solid hsl(var(--primary-foreground)); border-top: 2px solid transparent; border-radius: 50%; width: 16px; height: 16px; animation: spin 1s linear infinite; }
+        .btn .spinner { margin-right: 0.5rem; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .skeleton { background-color: hsl(var(--muted)); border-radius: var(--radius); animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 50% { opacity: .5; } }
+        .sql-block { background-color: #0d1117; color: #c9d1d9; border-radius: var(--radius); padding: 1rem; margin-top: 0.5rem; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; font-size: 0.9em; overflow-x: auto; border: 1px solid hsl(var(--border)); }
+        .error-message { background-color: hsl(var(--destructive) / 0.1); color: hsl(var(--destructive)); border: 1px solid hsl(var(--destructive) / 0.2); padding: 0.75rem; border-radius: var(--radius); margin-top: 1rem; }
+        .final-answer-content h2 { font-size: 1.25rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; color: hsl(var(--card-foreground)); }
+        .final-answer-content h3 { font-size: 1.1rem; font-weight: 600; margin-top: 1rem; margin-bottom: 0.5rem; color: hsl(var(--card-foreground)); }
+        .final-answer-content ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
+        .final-answer-content ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 1rem; }
+        .final-answer-content li { margin-bottom: 0.25rem; }
+        .final-answer-content p { margin-bottom: 1rem; line-height: 1.6; }
+        .final-answer-content strong { font-weight: 600; color: hsl(var(--card-foreground)); }
+        .final-answer-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+        .final-answer-content th, .final-answer-content td { border: 1px solid hsl(var(--border)); padding: 0.5rem 0.75rem; text-align: left; }
+        .final-answer-content th { background-color: hsl(var(--muted)); font-weight: 600; }
     </style>
 </head>
-<body>
-    <div class="app-container">
-        <h1>GigaChat Аналитический Помощник</h1>
-
-        <div class="input-section">
-            <label for="userPrompt" class="block text-sm font-medium text-gray-700">Введите ваш запрос к данным (на русском языке):</label>
-            <textarea id="userPrompt" placeholder="Например: Покажи топ 5 самых населенных территорий в 2024 году и их индекс доступности рынков."></textarea>
-            <button id="processButton" onclick="runPipeline()" class="mt-4">Обработать Запрос</button>
-            <div id="loadingIndicator" class="loading-spinner" style="display: none;"></div>
-            <div id="errorMessage" class="error-message" style="display: none;"></div>
-        </div>
-
-        <div class="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
-            <!-- Collapsible Agent 1 -->
-            <div class="collapsible-box" id="box-agent1">
-                <div class="agent-title collapsible-header" onclick="toggleCollapse('agent1')">
-                    Агент 1: Формализованный Запрос
-                    <span class="collapsible-arrow">&#9654;</span>
+<body class="py-8 md:py-12">
+    <div class="app-container max-w-4xl mx-auto px-4">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold tracking-tight text-slate-900">Аналитический Помощник</h1>
+            <p class="mt-2 text-lg text-slate-600">Введите ваш запрос на естественном языке для анализа данных.</p>
+        </header>
+        <main>
+            <div class="card p-6">
+                <label for="userPrompt" class="block text-sm font-medium text-slate-700">Ваш запрос к данным:</label>
+                <textarea id="userPrompt" class="mt-2" placeholder="Например: Покажи топ 5 самых населенных территорий в 2024 году..."></textarea>
+                <div id="errorMessage" class="error-message" style="display: none;"></div>
+                <div class="mt-4 flex items-center">
+                    <button id="processButton" onclick="runPipeline()" class="btn">
+                        <span id="buttonSpinner" class="spinner" style="display: none;"></span>
+                        <span id="buttonText">Обработать Запрос</span>
+                    </button>
                 </div>
-                <div class="agent-output collapsible-content" id="rephrasedPromptOutput">Здесь будет результат...</div>
             </div>
-            <!-- Collapsible Agent 2 -->
-            <div class="collapsible-box" id="box-agent2">
-                <div class="agent-title collapsible-header" onclick="toggleCollapse('agent2')">
-                    Агент 2: Пошаговый План
-                    <span class="collapsible-arrow">&#9654;</span>
+            <div class="mt-8">
+                <h2 class="text-xl font-semibold tracking-tight mb-4">Процесс Выполнения</h2>
+                <div class="card p-0">
+                    <div class="accordion">
+                        <details id="step-agent1"><summary><span>Шаг 1: Формализованный Запрос</span><svg class="chevron h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" /></svg></summary><div class="accordion-content" id="rephrasedPromptOutput"></div></details>
+                        <details id="step-agent2"><summary><span>Шаг 2: Пошаговый План</span><svg class="chevron h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" /></svg></summary><div class="accordion-content" id="planOutput"></div></details>
+                        <details id="step-agent3"><summary><span>Шаг 3: Генерация и Валидация SQL</span><svg class="chevron h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" /></svg></summary><div class="accordion-content"><h3 class="font-medium text-slate-800">Сгенерированный SQL:</h3><div id="sqlOutput"></div><h3 class="font-medium text-slate-800 mt-4">Лог Валидации:</h3><div id="sqlValidationOutput"></div></div></details>
+                        <details id="step-agent4"><summary><span>Шаг 4: Выполнение SQL и Результат</span><svg class="chevron h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" /></svg></summary><div class="accordion-content"><h3 class="font-medium text-slate-800">Выполненный SQL:</h3><div id="executedSqlOutput"></div><div id="sqlErrorOutput" class="error-message" style="display:none"></div><h3 class="font-medium text-slate-800 mt-4">Результат из БД:</h3><pre id="sqlResultOutput" class="text-xs p-2 border rounded-md bg-slate-50 mt-2 overflow-x-auto"></pre></div></details>
+                    </div>
                 </div>
-                <div class="agent-output collapsible-content" id="planOutput">Здесь будет результат...</div>
             </div>
-            <!-- Collapsible Agent 3 -->
-            <div class="collapsible-box" id="box-agent3">
-                <div class="agent-title collapsible-header" onclick="toggleCollapse('agent3')">
-                    Агент 3: Сгенерированный SQL
-                    <span class="collapsible-arrow">&#9654;</span>
-                </div>
-                <div class="agent-output collapsible-content" id="sqlOutput">Здесь будет результат...</div>
+            <div class="mt-8">
+                 <h2 class="text-xl font-semibold tracking-tight mb-4">Итоговый Ответ</h2>
+                 <div class="card p-6"><div id="finalAnswerOutput" class="final-answer-content"><p class="text-slate-500">Здесь будет итоговый ответ...</p></div></div>
             </div>
-            <!-- Collapsible SQL Validation/Fixing Log -->
-            <div class="collapsible-box" id="box-sqlvalidation">
-                <div class="agent-title collapsible-header" onclick="toggleCollapse('sqlvalidation')">
-                    Валидация и Исправление SQL
-                    <span class="collapsible-arrow">&#9654;</span>
-                </div>
-                <div class="agent-output collapsible-content" id="sqlValidationOutput">Здесь будет лог валидации и исправлений...</div>
-            </div>
-            <!-- Collapsible Executed SQL -->
-            <div class="collapsible-box" id="box-executedsql">
-                <div class="agent-title collapsible-header" onclick="toggleCollapse('executedsql')">
-                    Выполненный SQL
-                    <span class="collapsible-arrow">&#9654;</span>
-                </div>
-                <div class="agent-output collapsible-content" id="executedSqlOutput">Здесь будет выполненный SQL...</div>
-            </div>
-            <!-- Collapsible SQL Result -->
-            <div class="collapsible-box" id="box-sqlresult">
-                <div class="agent-title collapsible-header" onclick="toggleCollapse('sqlresult')">
-                    Результат SQL (из DuckDB)
-                    <span class="collapsible-arrow">&#9654;</span>
-                </div>
-                <div class="agent-output collapsible-content" id="sqlResultOutput">Здесь будут данные из DuckDB...</div>
-                <div id="sqlErrorOutput" class="sql-error-message" style="display:none"></div>
-            </div>
-        </div>
-        <div class="mt-8">
-            <h2 class="agent-title">Агент 4: Итоговый Ответ</h2>
-            <div id="finalAnswerOutput" class="agent-output final-answer">Здесь будет итоговый ответ...</div>
-        </div>
+        </main>
+        <footer class="text-center mt-12 text-sm text-slate-500"><p>&copy; 2024 GigaChat Analytics. All Rights Reserved.</p></footer>
     </div>
 
     <script>
-        // Collapsible logic
-        function toggleCollapse(agent) {
-            const box = document.getElementById('box-' + agent);
-            box.classList.toggle('collapsed');
-        }
-        // By default, collapse all except Agent 1
-        document.addEventListener('DOMContentLoaded', () => {
-            ['agent2', 'agent3', 'sqlvalidation', 'executedsql', 'sqlresult'].forEach(id => {
-                document.getElementById('box-' + id).classList.add('collapsed');
-            });
-        });
+        // *** REFACTORED SCRIPT FOR STREAMING ***
 
         const processButton = document.getElementById('processButton');
-        const loadingIndicator = document.getElementById('loadingIndicator');
+        const buttonSpinner = document.getElementById('buttonSpinner');
+        const buttonText = document.getElementById('buttonText');
         const errorMessageDiv = document.getElementById('errorMessage');
 
         const outputElements = {
@@ -241,100 +101,150 @@
             sqlError: document.getElementById('sqlErrorOutput'),
             finalAnswer: document.getElementById('finalAnswerOutput')
         };
+        
+        const SKELETON_HTML = `<div class="space-y-2 mt-2"><div class="skeleton h-4 w-full"></div><div class="skeleton h-4 w-5/6"></div></div>`;
+        const BACKEND_API_URL = 'http://127.0.0.1:5001/process_query_stream'; // Use the new streaming endpoint
 
-        // URL вашего Flask API
-        const BACKEND_API_URL = 'http://127.0.0.1:5001/process_query';
+        let eventSource; // Keep a reference to close it
 
-        async function runPipeline() {
+        function runPipeline() {
             const userPrompt = document.getElementById('userPrompt').value;
             if (!userPrompt.trim()) {
                 alert("Пожалуйста, введите ваш запрос к данным.");
                 return;
             }
 
+            // 1. Set UI to loading state and clear previous results
             processButton.disabled = true;
-            loadingIndicator.style.display = 'block';
+            buttonSpinner.style.display = 'inline-block';
+            buttonText.textContent = 'Обработка...';
             errorMessageDiv.style.display = 'none';
 
-            // Show spinners for each step
-            outputElements.rephrasedPrompt.innerHTML = '<div class="loading-spinner" style="display:block;margin:0 auto;"></div>';
-            outputElements.plan.innerHTML = '';
-            outputElements.sql.innerHTML = '';
-            outputElements.sqlValidation.innerHTML = '';
-            outputElements.executedSql.innerHTML = '';
-            outputElements.sqlResult.innerHTML = '';
-            outputElements.sqlError.style.display = 'none';
-            outputElements.finalAnswer.innerHTML = '';
+            // Clear all outputs and show skeletons
+            Object.values(outputElements).forEach(el => el.innerHTML = '');
+            document.querySelectorAll('details').forEach(d => d.open = false);
+            
+            // Set up skeletons for anticipated content
+            outputElements.rephrasedPrompt.innerHTML = SKELETON_HTML;
+            document.getElementById('step-agent1').open = true;
 
-            try {
-                let response = await fetch(BACKEND_API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_prompt: userPrompt }),
-                });
+            // 2. Open the EventSource connection
+            // We must POST the prompt, so we use a trick: POST to an endpoint that returns a stream ID,
+            // then connect to the stream. Or, if the server setup allows, pass prompt as a query param.
+            // For this example, let's assume the server can take it as a query param for simplicity.
+            // A more robust solution would involve a POST to initiate and get a stream URL.
+            const streamUrl = `${BACKEND_API_URL}?user_prompt=${encodeURIComponent(userPrompt)}`;
+            eventSource = new EventSource(streamUrl); // NOTE: A POST-based EventSource is more complex. This GET is for demonstration.
 
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || `Ошибка сервера: ${response.status}`);
+            eventSource.onopen = function() {
+                console.log("Connection to server opened.");
+            };
+
+            // 3. Handle incoming messages for each step
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+
+                // Check for the special 'done' message
+                if (data.step === 'done') {
+                    console.log("Stream finished.");
+                    eventSource.close();
+                    resetButton();
+                    return;
                 }
+                
+                // Use a router to update the correct part of the UI
+                updateUI(data.step, data.content);
+            };
 
-                const results = await response.json();
-
-                // Show each result as soon as it's available
-                outputElements.rephrasedPrompt.textContent = results.formal_request || "Нет данных от Агента 1";
-                outputElements.plan.textContent = results.plan || "Нет данных от Агента 2";
-                outputElements.sql.textContent = results.generated_sql_query || "SQL не сгенерирован";
-
-                // SQL Validation/Fixing Log
-                if (results.sql_validation_log && Array.isArray(results.sql_validation_log)) {
-                    outputElements.sqlValidation.innerHTML = results.sql_validation_log.map((entry, idx) => {
-                        let html = `<div style="margin-bottom:0.5em;"><b>Шаг ${idx+1} (${entry.query_source}):</b><br>`;
-                        if (entry.sql) html += `<div><b>SQL:</b><pre>${entry.sql}</pre></div>`;
-                        if (entry.validation) {
-                            html += `<div><b>Валидация:</b> ${typeof entry.validation === 'string' ? entry.validation : JSON.stringify(entry.validation, null, 2)}</div>`;
-                        }
-                        if (entry.original_sql) html += `<div><b>Исходный SQL:</b><pre>${entry.original_sql}</pre></div>`;
-                        if (entry.error) html += `<div><b>Ошибка:</b> <span style="color:#b91c1c">${entry.error}</span></div>`;
-                        if (entry.suggested_fix) html += `<div><b>Исправленный SQL:</b><pre>${entry.suggested_fix}</pre></div>`;
-                        html += '</div>';
-                        return html;
-                    }).join('');
-                } else {
-                    outputElements.sqlValidation.textContent = "Нет лога валидации/исправлений.";
-                }
-
-                // Executed SQL
-                outputElements.executedSql.innerHTML = results.executed_sql_query
-                    ? `<div class="executed-sql">${results.executed_sql_query}</div>`
-                    : "Нет выполненного SQL";
-
-                // SQL Result
-                outputElements.sqlResult.textContent = results.sql_results_str || "Нет результатов SQL";
-
-                // SQL Error
-                if (results.sql_error) {
-                    outputElements.sqlError.textContent = results.sql_error;
-                    outputElements.sqlError.style.display = 'block';
-                } else {
-                    outputElements.sqlError.style.display = 'none';
-                }
-
-                // Final Answer
-                outputElements.finalAnswer.textContent = results.final_answer || "Нет итогового ответа";
-
-            } catch (error) {
-                console.error("Ошибка в конвейере:", error);
-                errorMessageDiv.textContent = `Ошибка: ${error.message}`;
+            // 4. Handle any errors
+            eventSource.onerror = function(err) {
+                console.error("EventSource failed:", err);
+                errorMessageDiv.textContent = "Ошибка соединения с сервером. Поток прерван.";
                 errorMessageDiv.style.display = 'block';
-                Object.values(outputElements).forEach(el => {
-                    if (el.textContent === '' || el.innerHTML.includes('loading-spinner')) {
-                        el.textContent = 'Ошибка при обработке этого этапа.';
-                    }
-                });
-            } finally {
-                processButton.disabled = false;
-                loadingIndicator.style.display = 'none';
+                eventSource.close();
+                resetButton();
+            };
+        }
+        
+        // ЗАМЕНИТЕ СТАРУЮ ФУНКЦИЮ updateUI НА ЭТУ:
+        function updateUI(step, content) {
+            let element;
+            let detailElement;
+
+            // Открываем соответствующий аккордеон и показываем контент
+            switch (step) {
+                case 'formal_request':
+                    element = outputElements.rephrasedPrompt;
+                    detailElement = document.getElementById('step-agent1');
+                    element.innerHTML = ''; // Очищаем скелетон
+                    element.textContent = content || "Нет данных.";
+                    // Готовим следующий шаг
+                    document.getElementById('step-agent2').open = true;
+                    outputElements.plan.innerHTML = SKELETON_HTML;
+                    break;
+
+                case 'plan':
+                    element = outputElements.plan;
+                    detailElement = document.getElementById('step-agent2');
+                    element.innerHTML = '';
+                    element.textContent = content || "Нет данных.";
+                     // Готовим следующий шаг
+                    document.getElementById('step-agent3').open = true;
+                    outputElements.sql.innerHTML = SKELETON_HTML;
+                    break;
+
+                case 'generated_sql_query':
+                    element = outputElements.sql;
+                    detailElement = document.getElementById('step-agent3');
+                    element.innerHTML = `<pre class="sql-block">${content}</pre>`;
+                    break;
+                
+                // === НОВЫЕ БЛОКИ ДЛЯ ШАГА 4 ===
+                case 'executed_sql_query':
+                    detailElement = document.getElementById('step-agent4');
+                    if (detailElement) detailElement.open = true; // Открываем аккордеон для Шага 4
+                    element = outputElements.executedSql;
+                    element.innerHTML = `<pre class="sql-block">${content}</pre>`;
+                    // Готовим место для результата
+                    outputElements.sqlResult.innerHTML = SKELETON_HTML;
+                    break;
+
+                case 'sql_results_str':
+                    element = outputElements.sqlResult;
+                    element.innerHTML = ''; // Убираем скелетон
+                    element.textContent = content;
+                    break;
+                
+                case 'sql_error':
+                    element = outputElements.sqlError;
+                    element.textContent = content;
+                    element.style.display = 'block';
+                    // Убираем скелетон из поля результата, т.к. произошла ошибка
+                    outputElements.sqlResult.innerHTML = '<p class="text-red-500">Выполнение прервано из-за ошибки.</p>';
+                    break;
+                
+                case 'sql_validation_log':
+                    element = outputElements.sqlValidation;
+                    // Добавляем лог исправления, не очищая предыдущие
+                    element.innerHTML += `<div class="text-xs p-2 mt-2 border rounded-md bg-slate-50/50"><b>Попытка исправления:</b><pre class="sql-block !text-xs !p-2 !mt-1">${content.fix_attempt || 'Фиксер не предложил исправление.'}</pre><i>Исходная ошибка: ${content.error}</i></div>`;
+                    break;
+                
+                // === КОНЕЦ НОВЫХ БЛОКОВ ===
+
+                case 'final_answer':
+                    element = outputElements.finalAnswer;
+                    element.innerHTML = marked.parse(content || "<p>Ответ не был сгенерирован.</p>", { breaks: true, gfm: true });
+                    break;
+
+                default:
+                    console.warn("Получен неизвестный шаг:", step);
             }
+        }
+
+        function resetButton() {
+            processButton.disabled = false;
+            buttonSpinner.style.display = 'none';
+            buttonText.textContent = 'Обработать Запрос';
         }
     </script>
 </body>

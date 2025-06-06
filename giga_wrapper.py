@@ -10,7 +10,6 @@ GIGA_CREDENTIALS = os.environ.get("GIGACHAT_TOKEN")
 giga_client = None
 try:
     giga_client = GigaChat(credentials=GIGA_CREDENTIALS, verify_ssl_certs=False, model="GigaChat-2-Max")
-    print("Клиент GigaChat успешно инициализирован (Flask app).")
 except Exception as e:
     print(f"[ОШИБКА GigaChat Init] {e}")
 

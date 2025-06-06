@@ -127,22 +127,6 @@ def execute_duckdb_query(sql_query):
         print(f"[ОШИБКА DuckDB Query] {e}")
         return None
 
-# --- Настройка GigaChat ---
-GIGA_CREDENTIALS = os.environ.get("GIGACHAT_TOKEN")
-giga_client = None
-anomaly_agent = None
-
-try:
-    giga_client = GigaChat(credentials=GIGA_CREDENTIALS, verify_ssl_certs=False, model="GigaChat-2-Max")
-    print("Клиент GigaChat успешно инициализирован (Flask app).")
-    
-    # Инициализируем агента анализа аномалий
-    anomaly_agent = AnomalyDetectorAgent(giga_client, verbose=True)
-    print("🔍 Агент анализа аномалий инициализирован.")
-    
-except Exception as e:
-    print(f"[ОШИБКА GigaChat Init] {e}")
-
 TABLE_CONTEXT = """
 Тебе доступны следующие таблицы (представления DuckDB) и их ключевые столбцы. При генерации SQL всегда используй алиасы для таблиц (например, `p` для `population`, `ma` для `market_access`, `md` для `mo_directory`, `s` для `salary`, `mig` для `migration`, `c` для `connections`) и квалифицируй ВСЕ имена столбцов этими алиасами (например, `p.year`, `md.territory_id`, `s.value`). Это особенно важно для столбцов `territory_id` и `year`, так как они могут встречаться в нескольких таблицах.
 
@@ -201,10 +185,6 @@ def process_query():
         print(f"📨 Получен запрос от пользователя: {user_prompt}")
         if force_anomaly_analysis:
             print("🔒 Принудительный анализ аномалий включен")
-
-        # ШАГ 0: Анализ намерений для определения необходимости анализа аномалий
-        auto_anomaly_needed = agent0_intent_analyzer(user_prompt)
-        print(f"🧠 Агент анализа намерений: анализ аномалий {'НУЖЕН' if auto_anomaly_needed else 'НЕ НУЖЕН'}")
 
         # Запуск конвейера агентов
         print("\n🤖 Запуск мультиагентной системы...")
@@ -299,10 +279,6 @@ def process_query():
         
         final_answer = agent4_answer_generator(sql_results_df, user_prompt)
         print("✅ Агент 4 (генерация ответа) завершен")
-        
-        # Добавляем результаты анализа аномалий к финальному ответу
-        if anomaly_analysis and anomaly_analysis.get("anomalies_found"):
-            final_answer += f"\n\n🚨 **Автоматический анализ аномалий:**\n{anomaly_analysis['message']}"
 
         response_data = {
             "formal_request": formal_request,
@@ -312,18 +288,8 @@ def process_query():
             "sql_validation_log": sql_validation_log,
             "sql_error": sql_error_message if sql_results_df is None else None,
             "sql_results_str": sql_results_str,
-            "final_answer": final_answer,
-            "auto_anomaly_analysis": {
-                "intent_based": auto_anomaly_needed,
-                "data_based": data_based_anomaly_needed,
-                "executed": anomaly_analysis is not None,
-                "forced": force_anomaly_analysis
-            }
+            "final_answer": final_answer
         }
-        
-        # Добавляем результаты анализа аномалий в ответ
-        if anomaly_analysis:
-            response_data["anomaly_analysis"] = anomaly_analysis
 
         print(f"✅ Обработка завершена успешно")
         print("="*60)
@@ -373,7 +339,6 @@ def system_info():
         "anomaly_config": ANOMALY_AUTO_CONFIG,
         "database_status": duckdb_con is not None,
         "gigachat_status": giga_client is not None,
-        "anomaly_agent_status": anomaly_agent is not None,
         "version": "2.1 - Модульная архитектура с полной отладкой"
     })
 
