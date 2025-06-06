@@ -3,7 +3,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
+load_dotenv(override=True)
 
 # --- Настройка GigaChat ---
 GIGA_CREDENTIALS = os.environ.get("GIGACHAT_TOKEN")
