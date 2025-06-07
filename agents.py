@@ -295,44 +295,49 @@ def agent_sql_fixer(failed_sql_query, error_message, plan):
 # ==============================================================================
 
 def agent_anomaly_detector(sql_result_df, user_prompt):
-    """Агент обнаружения аномалий в данных с исправленной JSON сериализацией"""
+    """Оптимизированный агент обнаружения аномалий - только топ-10 результатов"""
     if sql_result_df is None or sql_result_df.empty:
         return {"anomalies_found": False, "message": "Нет данных для анализа аномалий"}
 
+    # ОГРАНИЧИВАЕМ АНАЛИЗ ПЕРВЫМИ 1000 ЗАПИСЯМИ ДЛЯ ПРОИЗВОДИТЕЛЬНОСТИ
+    df_sample = sql_result_df.head(1000) if len(sql_result_df) > 1000 else sql_result_df
+    
     anomalies = []
-    numeric_columns = sql_result_df.select_dtypes(include=[np.number]).columns
+    numeric_columns = df_sample.select_dtypes(include=[np.number]).columns
 
     if len(numeric_columns) == 0:
         return {"anomalies_found": False, "message": "В данных нет числовых столбцов для анализа"}
 
-    # Для данных миграции применяем групповой анализ
-    if 'territory_id' in sql_result_df.columns and 'value' in sql_result_df.columns:
-        return analyze_migration_anomalies(sql_result_df, user_prompt)
+    # Для данных миграции
+    if 'territory_id' in df_sample.columns and 'value' in df_sample.columns:
+        return analyze_migration_anomalies_optimized(df_sample, user_prompt)
 
-    # Стандартный анализ для других типов данных
-    for column in numeric_columns:
-        column_data = sql_result_df[column].dropna()
+    # Стандартный анализ - ТОЛЬКО ПЕРВЫЙ ЧИСЛОВОЙ СТОЛБЕЦ
+    for column in numeric_columns[:1]:  # Анализируем только первый столбец
+        column_data = df_sample[column].dropna()
         if len(column_data) < 4:
             continue
 
-        # IQR метод
         Q1 = column_data.quantile(0.25)
         Q3 = column_data.quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
 
-        outliers_mask = (sql_result_df[column] < lower_bound) | (sql_result_df[column] > upper_bound)
-        outliers = sql_result_df[outliers_mask]
+        outliers_mask = (df_sample[column] < lower_bound) | (df_sample[column] > upper_bound)
+        outliers = df_sample[outliers_mask]
 
-        if not outliers.empty:
+        if not outliers.empty and len(outliers) >= 3:  # Минимум 3 аномалии для отчета
+            # ОГРАНИЧИВАЕМ ДО 10 ПРИМЕРОВ
+            top_outliers = outliers.head(10)
+            
             anomaly_info = {
                 "column": column,
                 "anomaly_count": len(outliers),
                 "total_count": len(column_data),
                 "anomaly_percentage": round((len(outliers) / len(column_data)) * 100, 2),
-                "outlier_values": [float(x) for x in outliers[column].tolist()[:10]],  # Конвертируем в обычные float
-                "bounds": {"lower": float(lower_bound), "upper": float(upper_bound)},  # Конвертируем в float
+                "outlier_values": [float(x) for x in top_outliers[column].tolist()],
+                "bounds": {"lower": float(lower_bound), "upper": float(upper_bound)},
                 "statistics": {
                     "mean": float(column_data.mean()),
                     "median": float(column_data.median()),
@@ -342,62 +347,47 @@ def agent_anomaly_detector(sql_result_df, user_prompt):
             anomalies.append(anomaly_info)
 
     if anomalies:
-        try:
-            anomaly_description = generate_anomaly_description(anomalies, user_prompt)
-        except Exception as e:
-            anomaly_description = f"Обнаружены аномалии в {len(anomalies)} столбцах"
-
         return {
             "anomalies_found": True,
             "anomaly_count": len(anomalies),
             "anomalies": anomalies,
-            "description": anomaly_description
+            "description": f"Обнаружены аномалии в {len(anomalies)} показателях. Найдено {anomalies[0]['anomaly_count']} аномальных значений ({anomalies[0]['anomaly_percentage']}%)."
         }
     else:
         return {"anomalies_found": False, "message": "Аномалии в данных не обнаружены"}
 
-
-def analyze_migration_anomalies(df, user_prompt):
-    """Специализированный анализ аномалий для миграционных данных"""
+def analyze_migration_anomalies_optimized(df, user_prompt):
+    """Оптимизированный анализ миграционных аномалий - топ-10"""
     anomalies = []
-
-    # Группируем по территориям и анализируем
-    for territory_id in df['territory_id'].unique():
+    
+    # Берем только топ-10 территорий по количеству данных
+    territory_counts = df['territory_id'].value_counts().head(10)
+    
+    for territory_id in territory_counts.index:
         territory_data = df[df['territory_id'] == territory_id]['value']
-
+        
         if len(territory_data) < 3:
             continue
 
-        # Z-score метод для каждой территории
         mean_val = territory_data.mean()
         std_val = territory_data.std()
 
-        if std_val == 0:  # Нет вариации
+        if std_val == 0:
             continue
 
         z_scores = np.abs((territory_data - mean_val) / std_val)
-        outlier_threshold = 2.5  # Более мягкий порог для миграционных данных
-
-        outliers = territory_data[z_scores > outlier_threshold]
+        outliers = territory_data[z_scores > 2.5]
 
         if not outliers.empty:
-            # ИСПРАВЛЕНИЕ: Правильное использование iloc с квадратными скобками
-            if 'municipal_district_name' in df.columns:
-                territory_rows = df[df['territory_id'] == territory_id]
-                if not territory_rows.empty:
-                    territory_name = territory_rows['municipal_district_name'].iloc[0]  # ИСПРАВЛЕНО!
-                else:
-                    territory_name = str(territory_id)
-            else:
-                territory_name = str(territory_id)
+            territory_name = df[df['territory_id'] == territory_id]['municipal_district_name'].iloc[0] if 'municipal_district_name' in df.columns else str(territory_id)
 
             anomaly_info = {
                 "territory": territory_name,
-                "territory_id": str(territory_id),  # Конвертируем в строку
+                "territory_id": str(territory_id),
                 "anomaly_count": len(outliers),
                 "total_count": len(territory_data),
                 "anomaly_percentage": round((len(outliers) / len(territory_data)) * 100, 2),
-                "outlier_values": [float(x) for x in outliers.tolist()],  # Конвертируем в float
+                "outlier_values": [float(x) for x in outliers.head(5).tolist()],  # Только 5 примеров
                 "statistics": {
                     "mean": float(mean_val),
                     "std": float(std_val),
@@ -407,20 +397,22 @@ def analyze_migration_anomalies(df, user_prompt):
             anomalies.append(anomaly_info)
 
     if anomalies:
-        description = f"Обнаружены миграционные аномалии в {len(anomalies)} территориях. Анализ выявил необычные миграционные потоки, которые значительно отклоняются от нормальных паттернов для данных территорий."
-
+        # ОГРАНИЧИВАЕМ ДО 10 ТЕРРИТОРИЙ
+        anomalies = anomalies[:10]
+        
+        description = f"Обнаружены миграционные аномалии в {len(anomalies)} территориях из топ-10 анализируемых."
         return {
             "anomalies_found": True,
             "anomaly_count": len(anomalies),
             "anomalies": anomalies,
             "description": description,
-            "analysis_method": "Z-score по территориям"
+            "analysis_method": "Z-score по территориям (топ-10)"
         }
 
     return {
         "anomalies_found": False,
         "message": "Аномалии в миграционных данных не обнаружены",
-        "analyzed_territories": len(df['territory_id'].unique())
+        "analyzed_territories": len(territory_counts)
     }
 
 
