@@ -33,18 +33,21 @@ def setup_duckdb():
 
         if not all_parquet_views_created:
             print("[ПРЕДУПРЕЖДЕНИЕ] Не все представления для Parquet-файлов были успешно созданы.")
-        return True
+        return duckdb_con
     except Exception as e:
         print(f"[ОШИБКА DuckDB] Не удалось инициализировать DuckDB на верхнем уровне: {e}")
         duckdb_con = None
-        return False
+        return None
 
-def execute_duckdb_query(sql_query):
-    global duckdb_con
-    if duckdb_con is None: return None
+async def execute_duckdb_query(connection, sql_query):
+    """Execute a SQL query using the provided DuckDB connection"""
+    if connection is None: return None
     print(f"\nВыполнение SQL: {sql_query}")
     try:
-        return duckdb_con.execute(sql_query).fetchdf()
+        # DuckDB operations are CPU-bound, so we run them in a thread pool
+        import asyncio
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: connection.execute(sql_query).fetchdf())
     except Exception as e:
         print(f"[ОШИБКА DuckDB Query] {e}")
         return None 

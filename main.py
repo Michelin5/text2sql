@@ -1,11 +1,14 @@
 import asyncio
 import json
 import numpy as np
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 import pandas as pd
+from pydantic import BaseModel
 from json.decoder import JSONDecodeError
+from fastapi.staticfiles import StaticFiles
+import os
 
 # Импортируем агентов и утилиты
 from giga_wrapper import giga_client, call_giga_api_wrapper
@@ -16,9 +19,16 @@ from agents import (
     agent3_sql_generator,
     agent_sql_validator,
     agent_sql_fixer,
-    agent_anomaly_detector
+    agent_anomaly_detector,
+    agent_rag_retriever
 )
 from duckdb_utils import setup_duckdb, execute_duckdb_query
+from rag_handler import init_rag_db, add_to_rag_db
+
+# Determine the absolute path to the project directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+INDEX_HTML_PATH = os.path.join(STATIC_DIR, "index.html")
 
 app = FastAPI()
 
@@ -30,6 +40,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files - Use the absolute STATIC_DIR path
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# Root endpoint to serve index.html - THIS SHOULD BE THE ONLY @app.get("/")
+@app.get("/")
+async def read_index():
+    # Use the absolute INDEX_HTML_PATH
+    # Also, check if the file exists before trying to serve it for better error handling
+    if not os.path.exists(INDEX_HTML_PATH):
+        print(f"[ERROR] index.html not found at: {INDEX_HTML_PATH}")
+        raise HTTPException(status_code=404, detail=f"index.html not found at {INDEX_HTML_PATH}")
+    print(f"[INFO] Serving index.html from: {INDEX_HTML_PATH}")
+    return FileResponse(INDEX_HTML_PATH)
 
 # ==============================================================================
 # ОБРАБОТКА НЕОПРЕДЕЛЕННОСТИ И УТОЧНЕНИЙ
@@ -109,7 +133,7 @@ async def analyze_query_ambiguity(user_prompt):
 # LLM-АНАЛИЗ РЕЗУЛЬТАТОВ И ГЕНЕРАЦИЯ САММАРИ
 # ==============================================================================
 
-def generate_llm_analysis_summary(sql_results_df, user_prompt, anomaly_results=None, needs_anomaly_detection=False):
+def generate_llm_analysis_summary(sql_results_df, user_prompt, anomaly_results=None, needs_anomaly_detection=False, rag_context: dict = None):
     """
     Генерирует LLM-анализ результатов с структурированным саммари
     """
@@ -118,7 +142,7 @@ def generate_llm_analysis_summary(sql_results_df, user_prompt, anomaly_results=N
         analysis_context = prepare_analysis_context(sql_results_df, user_prompt, anomaly_results, needs_anomaly_detection)
         
         # Генерируем LLM-анализ
-        llm_summary = generate_intelligent_summary(analysis_context)
+        llm_summary = generate_intelligent_summary(analysis_context, rag_context=rag_context)
         
         return llm_summary
     except Exception as e:
@@ -163,11 +187,21 @@ def prepare_analysis_context(sql_results_df, user_prompt, anomaly_results, needs
     
     return context
 
-def generate_intelligent_summary(analysis_context):
+def generate_intelligent_summary(analysis_context, rag_context: dict = None):
     """Генерирует интеллектуальное саммари с помощью LLM"""
-    system_instruction = """
-Ты — эксперт-аналитик данных. На основе предоставленного контекста анализа создай структурированное, профессиональное саммари на русском языке.
+    rag_guidance = ""
+    if rag_context and isinstance(rag_context, dict) and rag_context.get('final_answer'):
+        rag_guidance = (
+            "Тебе также предоставлен контекст из очень похожего успешного прошлого запроса, включая его финальный ответ. "
+            "Используй стиль, тон и структуру прошлого ответа (`Контекст прошлого запроса (финальный ответ)`) как хороший пример. "
+            "Однако, убедись, что ТЕКУЩИЙ ответ ТОЧНО отражает предоставленные ДАННЫЕ И АНАЛИЗ из `Контекст анализа данных`, "
+            "а не данные из прошлого ответа. Адаптируй формулировки под текущие данные.\n"
+            f"Контекст прошлого запроса (финальный ответ):\n{rag_context.get('final_answer', 'N/A')}\n\n"
+        )
 
+    system_instruction = f"""
+Ты — эксперт-аналитик данных. На основе предоставленного контекста анализа создай структурированное, профессиональное саммари на русском языке.
+{rag_guidance}
 Твоя задача:
 1. Проанализировать полученные данные и результаты
 2. Выделить ключевые инсайты и паттерны
@@ -335,210 +369,202 @@ def generate_fallback_summary(sql_results_df, user_prompt, anomaly_results, need
 
 async def event_generator(user_prompt: str, duckdb_con):
     """
-    Асинхронный генератор с LLM-анализом результатов
+    Асинхронный генератор событий для обработки запроса пользователя.
+    Включает RAG, агентов, выполнение SQL и генерацию ответа.
     """
-    anomaly_results = None  # Сохраняем результаты анализа аномалий
+    current_stage = "Начало обработки"
+    current_data = {}
+    rag_context_for_agents = None
     
-    try:
-        print(f"\n[Stream] Получен запрос: {user_prompt}")
+    # Accumulated data for potential saving
+    accumulated_data_for_rag = {
+        "user_prompt": user_prompt,
+        "formal_prompt": None,
+        "plan": None,
+        "sql_query": None,
+        "final_answer": None
+    }
 
-        # --- Анализ неопределенности (встроенный) ---
-        ambiguity_data, enhanced_prompt, needs_clarification, needs_anomaly_detection = await analyze_query_ambiguity(user_prompt)
+    try:
+        yield {"type": "status", "stage": "rag_check", "message": "Проверка базы знаний похожих запросов..."}
+        rag_result = agent_rag_retriever(user_prompt)
+        rag_status = rag_result.get("status")
+        rag_data = rag_result.get("data")
+
+        if rag_status == "error":
+            yield {"type": "error", "stage": "rag_check", "message": f"Ошибка при доступе к базе знаний: {rag_result.get('message')}. Продолжаем без нее."}
+        elif rag_status == "exact":
+            final_answer = rag_data.get("final_answer", "Точный ответ найден, но не удалось извлечь его содержимое.")
+            accumulated_data_for_rag["formal_prompt"] = rag_data.get("formal_prompt")
+            accumulated_data_for_rag["plan"] = rag_data.get("plan")
+            accumulated_data_for_rag["sql_query"] = rag_data.get("sql_query")
+            accumulated_data_for_rag["final_answer"] = final_answer
+            yield {"type": "final_answer", "stage": "rag_exact_match", "answer": final_answer, "rag_components": accumulated_data_for_rag, "message": "Найден точный ответ в базе знаний."}
+            print(f"[EVENT_GENERATOR] RAG exact match. Returning stored answer for: {user_prompt[:50]}")
+            return
+        elif rag_status == "similar":
+            rag_context_for_agents = rag_data
+            yield {"type": "status", "stage": "rag_similar_match", "message": "Найден похожий запрос в базе знаний. Используем его для улучшения ответа.", "similar_data_preview": {k: (v[:100] + '...' if isinstance(v, str) and len(v) > 100 else v) for k,v in rag_data.items()}}
+            print(f"[EVENT_GENERATOR] RAG similar match found for: {user_prompt[:50]}")
+        else:
+            yield {"type": "status", "stage": "rag_no_match", "message": "Похожих запросов в базе знаний не найдено. Стандартная обработка."}
+            print(f"[EVENT_GENERATOR] RAG no match for: {user_prompt[:50]}")
+
+        # 0. Координатор (Anomaly detection check)
+        current_stage = "Определение типа анализа (координатор)"
+        yield {"type": "status", "stage": "coordinator", "message": current_stage + "..."}
+        ambiguity_analysis_result, enhanced_prompt, needs_clarification, needs_anomaly_detection_local = await analyze_query_ambiguity(user_prompt)
         
         if needs_clarification:
-            yield f"data: {json.dumps({'step': 'clarification_needed', 'content': ambiguity_data}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'step': 'done', 'content': ''}, ensure_ascii=False)}\n\n"
+            yield {"type": "clarification_needed", "stage": "ambiguity_analysis", "data": ambiguity_analysis_result}
+            print(f"[EVENT_GENERATOR] Clarification needed for: {user_prompt[:50]}")
+            return
+
+        if enhanced_prompt and enhanced_prompt != user_prompt:
+            yield {"type": "status", "stage": "ambiguity_analysis", "message": f"Запрос был автоматически улучшен: {enhanced_prompt}", "original_prompt": user_prompt, "enhanced_prompt": enhanced_prompt}
+            processed_user_prompt = enhanced_prompt
+        else:
+            processed_user_prompt = user_prompt
+        
+        needs_anomaly_detection = needs_anomaly_detection_local
+
+        # 1. Переформулировщик
+        current_stage = "Переформулировка запроса"
+        yield {"type": "status", "stage": "rephraser", "message": current_stage + "..."}
+        formal_prompt_result = agent1_rephraser(processed_user_prompt, rag_context=rag_context_for_agents)
+        accumulated_data_for_rag["formal_prompt"] = formal_prompt_result
+        yield {"type": "intermediary_result", "stage": "rephraser", "name": "Формальный запрос", "content": formal_prompt_result}
+
+        # 2. Планировщик
+        current_stage = "Создание плана"
+        yield {"type": "status", "stage": "planner", "message": current_stage + "..."}
+        plan_result = agent2_planner(formal_prompt_result, rag_context=rag_context_for_agents)
+        accumulated_data_for_rag["plan"] = plan_result
+        yield {"type": "intermediary_result", "stage": "planner", "name": "План выполнения", "content": plan_result}
+
+        # 3. SQL Генератор
+        current_stage = "Генерация SQL"
+        yield {"type": "status", "stage": "sql_generator", "message": current_stage + "..."}
+        sql_query_result = agent3_sql_generator(plan_result, rag_context=rag_context_for_agents)
+        yield {"type": "intermediary_result", "stage": "sql_generator", "name": "Сгенерированный SQL", "content": sql_query_result, "language": "sql"}
+
+        # 4. Валидация и исправление SQL
+        current_stage = "Валидация SQL"
+        max_fix_attempts = 3
+        current_fix_attempt = 0
+        validated_sql = None
+
+        for attempt in range(max_fix_attempts):
+            current_fix_attempt = attempt + 1
+            yield {"type": "status", "stage": "sql_validation", "message": f"{current_stage} (попытка {current_fix_attempt}/{max_fix_attempts})..."}
+            validator_result = agent_sql_validator(sql_query_result, plan_result)
+
+            if validator_result.get("is_valid"):
+                validated_sql = validator_result.get("corrected_sql") or sql_query_result
+                yield {"type": "intermediary_result", "stage": "sql_validation", "name": "Валидированный SQL", "content": validated_sql, "language": "sql", "message": "SQL прошел валидацию."}
+                break
+            else:
+                error_message = validator_result.get("message", "SQL не прошел валидацию.")
+                yield {"type": "warning", "stage": "sql_validation", "message": f"Ошибка валидации SQL: {error_message}"}
+                
+                if validator_result.get("corrected_sql"):
+                    sql_query_result = validator_result["corrected_sql"]
+                    yield {"type": "status", "stage": "sql_auto_correction", "message": "Валидатор предложил исправление. Повторная валидация...", "corrected_sql": sql_query_result}
+                    continue
+
+                current_stage = "Исправление SQL (агентом)"
+                yield {"type": "status", "stage": "sql_fixer", "message": current_stage + "..."}
+                fixed_sql = agent_sql_fixer(sql_query_result, error_message, plan_result)
+                if fixed_sql and fixed_sql.strip():
+                    sql_query_result = fixed_sql
+                    yield {"type": "intermediary_result", "stage": "sql_fixer", "name": "Исправленный SQL (агентом)", "content": sql_query_result, "language": "sql"}
+                    current_stage = "Валидация SQL"
+                else:
+                    yield {"type": "error", "stage": "sql_fixer", "message": "Агент не смог исправить SQL. Пожалуйста, проверьте план или запрос."}
+                    return
+
+        if not validated_sql:
+            yield {"type": "error", "stage": "sql_validation", "message": "Не удалось получить валидный SQL после нескольких попыток."}
             return
         
-        if ambiguity_data and enhanced_prompt != user_prompt:
-            yield f"data: {json.dumps({'step': 'query_enhanced', 'content': ambiguity_data}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-            user_prompt = enhanced_prompt
-            print(f"[Stream] Запрос автоматически улучшен: {user_prompt}")
+        accumulated_data_for_rag["sql_query"] = validated_sql
 
-        # --- Агент 0: Координатор ---
+        # 5. Выполнение SQL
+        current_stage = "Выполнение SQL в DuckDB"
+        yield {"type": "status", "stage": "sql_execution", "message": current_stage + "..."}
         try:
-            coordination_result = agent0_coordinator(user_prompt)
-            
-            if isinstance(coordination_result, str):
-                print(f"[COORDINATOR WARNING] Получена строка: {coordination_result}")
+            sql_results_df = await execute_duckdb_query(duckdb_con, validated_sql)
+            if sql_results_df is not None and not sql_results_df.empty:
+                for col in sql_results_df.columns:
+                    if pd.api.types.is_datetime64_any_dtype(sql_results_df[col]):
+                        sql_results_df[col] = sql_results_df[col].astype(str)
+                sql_results_json = sql_results_df.to_dict(orient='records')
+                print(f"[EVENT_GENERATOR] SQL executed successfully. Rows returned: {len(sql_results_json)}")
+            else:
+                sql_results_json = []
+                print(f"[EVENT_GENERATOR] SQL executed successfully but returned no data. Query was:\n{validated_sql}")
+            yield {"type": "sql_result", "stage": "sql_execution", "data": sql_results_json, "row_count": len(sql_results_json), "message": "SQL выполнен успешно."}
+        except Exception as e:
+            yield {"type": "error", "stage": "sql_execution", "message": f"Ошибка выполнения SQL: {str(e)}"}
+            print(f"[EVENT_GENERATOR ERROR] SQL execution failed. Query was:\n{validated_sql}\nError: {str(e)}")
+            current_stage = "Исправление SQL после ошибки БД"
+            yield {"type": "status", "stage": "sql_fixer_db_error", "message": current_stage + "..."}
+            fixed_sql_db_error = agent_sql_fixer(validated_sql, str(e), plan_result)
+            if fixed_sql_db_error and fixed_sql_db_error.strip():
+                validated_sql = fixed_sql_db_error
+                accumulated_data_for_rag["sql_query"] = validated_sql
+                yield {"type": "intermediary_result", "stage": "sql_fixer_db_error", "name": "Исправленный SQL (после ошибки БД)", "content": validated_sql, "language": "sql"}
+                yield {"type": "status", "stage": "sql_execution_retry", "message": "Повторное выполнение исправленного SQL..."}
                 try:
-                    import re
-                    json_match = re.search(r'\{.*\}', coordination_result, re.DOTALL)
-                    if json_match:
-                        coordination_result = json.loads(json_match.group(0))
+                    sql_results_df = await execute_duckdb_query(duckdb_con, validated_sql)
+                    if sql_results_df is not None and not sql_results_df.empty:
+                        for col in sql_results_df.columns:
+                            if pd.api.types.is_datetime64_any_dtype(sql_results_df[col]):
+                                sql_results_df[col] = sql_results_df[col].astype(str)
+                        sql_results_json = sql_results_df.to_dict(orient='records')
                     else:
-                        raise ValueError("JSON не найден в ответе")
-                except Exception as parse_error:
-                    print(f"[COORDINATOR ERROR] Ошибка парсинга: {parse_error}")
-                    coordination_result = {
-                        "needs_anomaly_detection": needs_anomaly_detection,
-                        "analysis_type": "anomaly" if needs_anomaly_detection else "standard",
-                        "keywords": []
-                    }
-            
-            if coordination_result.get("needs_anomaly_detection") is not None:
-                needs_anomaly_detection = coordination_result.get("needs_anomaly_detection", False)
-            
-            print(f"[Stream] Результат координации: {coordination_result}")
-            yield f"data: {json.dumps({'step': 'coordination', 'content': coordination_result}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
+                        sql_results_json = []
+                    yield {"type": "sql_result", "stage": "sql_execution_retry", "data": sql_results_json, "row_count": len(sql_results_json), "message": "Исправленный SQL выполнен успешно."}
+                except Exception as e_retry:
+                    yield {"type": "error", "stage": "sql_execution_retry", "message": f"Ошибка повторного выполнения SQL: {str(e_retry)}"}
+                    return
+            else:
+                yield {"type": "error", "stage": "sql_fixer_db_error", "message": "Агент не смог исправить SQL после ошибки БД."}
+                return
 
-        except Exception as coord_error:
-            print(f"[COORDINATOR ERROR] Ошибка в координаторе: {coord_error}")
-            coordination_result = {
-                "needs_anomaly_detection": needs_anomaly_detection,
-                "analysis_type": "anomaly" if needs_anomaly_detection else "standard",
-                "keywords": [],
-                "error": str(coord_error)
-            }
-            yield f"data: {json.dumps({'step': 'coordination', 'content': coordination_result}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-
-        # --- Агент 1: Формализация запроса ---
-        try:
-            formal_request = agent1_rephraser(user_prompt)
-            print(f"[Stream] Формальный запрос: {formal_request}")
-            yield f"data: {json.dumps({'step': 'formal_request', 'content': formal_request}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-        except Exception as e:
-            print(f"[REPHRASER ERROR] Ошибка в переформулировании: {e}")
-            formal_request = user_prompt
-            yield f"data: {json.dumps({'step': 'formal_request', 'content': formal_request}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-
-        # --- Агент 2: Построение плана ---
-        try:
-            plan = agent2_planner(formal_request)
-            print(f"[Stream] План: {plan}")
-            yield f"data: {json.dumps({'step': 'plan', 'content': plan}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-        except Exception as e:
-            print(f"[PLANNER ERROR] Ошибка в планировании: {e}")
-            plan = f"1. Анализ запроса: {formal_request}\n2. Поиск релевантных данных\n3. Формирование ответа"
-            yield f"data: {json.dumps({'step': 'plan', 'content': plan}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-        
-        # --- Агент 3: Генерация SQL ---
-        try:
-            generated_sql_query = agent3_sql_generator(plan)
-            print(f"[Stream] Сгенерированный SQL: {generated_sql_query}")
-            yield f"data: {json.dumps({'step': 'generated_sql_query', 'content': generated_sql_query}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-        except Exception as e:
-            print(f"[SQL_GENERATOR ERROR] Ошибка в генерации SQL: {e}")
-            yield f"data: {json.dumps({'step': 'error', 'content': f'Ошибка генерации SQL: {str(e)}'}, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'step': 'done', 'content': ''}, ensure_ascii=False)}\n\n"
-            return
-
-        current_sql_query = generated_sql_query
-        sql_results_df = None
-        MAX_FIX_ATTEMPTS = 2
-
-        # --- Цикл валидации и исправления SQL ---
-        for attempt in range(MAX_FIX_ATTEMPTS):
-            if not current_sql_query or "SELECT" not in current_sql_query.upper():
-                error_msg = 'Не удалось сгенерировать корректный SQL-запрос. Проверьте формулировку запроса.'
-                yield f"data: {json.dumps({'step': 'final_answer', 'content': error_msg}, ensure_ascii=False)}\n\n"
-                break
-
-            yield f"data: {json.dumps({'step': 'executed_sql_query', 'content': current_sql_query}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-            
-            try:
-                print(f"[Stream] Попытка выполнения SQL ({attempt + 1}/{MAX_FIX_ATTEMPTS})...")
-                sql_results_df = execute_duckdb_query(current_sql_query)
-                
-                if sql_results_df is not None and not sql_results_df.empty:
-                    sql_results_str = sql_results_df.to_markdown(index=False)
-                    print(f"[Stream] SQL выполнен успешно. Получено {len(sql_results_df)} строк.")
-                else:
-                    sql_results_str = "Запрос SQL выполнен, но данные не найдены."
-                    print("[Stream] SQL выполнен, но результат пустой.")
-                
-                yield f"data: {json.dumps({'step': 'sql_results_str', 'content': sql_results_str}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.01)
-                break
-
-            except Exception as e:
-                sql_error_message = str(e)
-                print(f"[Stream] Ошибка DuckDB: {sql_error_message}")
-                yield f"data: {json.dumps({'step': 'sql_error', 'content': sql_error_message}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.01)
-
-                if attempt < MAX_FIX_ATTEMPTS - 1:
-                    print("[Stream] Попытка исправить SQL...")
-                    try:
-                        fixed_sql = agent_sql_fixer(current_sql_query, sql_error_message, plan)
-                        fix_log_entry = {
-                            "fix_attempt": attempt + 1,
-                            "fixed_sql": fixed_sql, 
-                            "original_sql": current_sql_query, 
-                            "error": sql_error_message
-                        }
-                        yield f"data: {json.dumps({'step': 'sql_validation_log', 'content': fix_log_entry}, ensure_ascii=False)}\n\n"
-                        await asyncio.sleep(0.01)
-
-                        if fixed_sql and fixed_sql.strip():
-                            print(f"[Stream] Fixer предложил новый SQL: {fixed_sql}")
-                            current_sql_query = fixed_sql
-                        else:
-                            print("[Stream] Fixer не смог предложить исправление.")
-                            sql_results_df = None
-                            break
-                    except Exception as fixer_error:
-                        print(f"[FIXER ERROR] Ошибка в исправлении SQL: {fixer_error}")
-                        sql_results_df = None
-                        break
-                else:
-                    print("[Stream] Достигнуто макс. число попыток исправления.")
-                    sql_results_df = None
-
-        # --- Агент аномалий (если требуется) ---
+        # 6. Анализ аномалий (если нужно)
+        anomaly_summary = None
         if needs_anomaly_detection:
-            print("[Stream] Запуск агента обнаружения аномалий...")
-            try:
-                anomaly_results = agent_anomaly_detector(sql_results_df, user_prompt)
-                print(f"[Stream] Результаты анализа аномалий: {anomaly_results}")
-                yield f"data: {json.dumps({'step': 'anomaly_analysis', 'content': anomaly_results}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.01)
-            except Exception as e:
-                print(f"[ANOMALY ERROR] Ошибка в агенте аномалий: {e}")
-                anomaly_results = {
-                    "anomalies_found": False, 
-                    "error": f"Ошибка анализа аномалий: {str(e)}",
-                    "message": "Не удалось выполнить анализ аномалий"
-                }
-                yield f"data: {json.dumps({'step': 'anomaly_analysis', 'content': anomaly_results}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.01)
+            current_stage = "Анализ аномалий"
+            yield {"type": "status", "stage": "anomaly_detection", "message": current_stage + "..."}
+            if sql_results_df is not None and not sql_results_df.empty:
+                anomaly_results = agent_anomaly_detector(sql_results_df.copy(), processed_user_prompt)
+                yield {"type": "intermediary_result", "stage": "anomaly_detection", "name": "Результаты анализа аномалий", "content": anomaly_results}
+                anomaly_summary = anomaly_results
+            else:
+                 yield {"type": "warning", "stage": "anomaly_detection", "message": "Нет данных для анализа аномалий."}
 
-        # --- LLM-АНАЛИЗ И ГЕНЕРАЦИЯ САММАРИ ---
-        print("[Stream] Генерация LLM-саммари результатов...")
-        yield f"data: {json.dumps({'step': 'llm_analysis_start', 'content': 'Генерация интеллектуального саммари...'}, ensure_ascii=False)}\n\n"
-        await asyncio.sleep(0.01)
-        
-        try:
-            llm_summary = generate_llm_analysis_summary(
+        # 7. Генерация LLM саммари / ответа
+        current_stage = "Генерация итогового ответа"
+        yield {"type": "status", "stage": "final_summary_generation", "message": current_stage + "..."}
+        llm_summary_result = generate_llm_analysis_summary(
                 sql_results_df, 
-                user_prompt, 
-                anomaly_results, 
-                needs_anomaly_detection
-            )
-            print("[Stream] LLM-саммари сгенерировано.")
-            yield f"data: {json.dumps({'step': 'final_answer', 'content': llm_summary}, ensure_ascii=False)}\n\n"
-        except Exception as e:
-            print(f"[LLM_SUMMARY ERROR] Ошибка в генерации LLM-саммари: {e}")
-            fallback_summary = generate_fallback_summary(sql_results_df, user_prompt, anomaly_results, needs_anomaly_detection)
-            yield f"data: {json.dumps({'step': 'final_answer', 'content': fallback_summary}, ensure_ascii=False)}\n\n"
+            processed_user_prompt, 
+            anomaly_results=anomaly_summary,
+            needs_anomaly_detection=needs_anomaly_detection,
+            rag_context=rag_context_for_agents
+        )
+        accumulated_data_for_rag["final_answer"] = llm_summary_result
+        yield {"type": "final_answer", "stage": "final_summary_generation", "answer": llm_summary_result, "rag_components": accumulated_data_for_rag, "message": "Итоговый ответ сгенерирован."}
 
     except Exception as e:
-        print(f"[Stream] Произошла критическая ошибка в генераторе: {e}")
-        error_content = f"**❌ Критическая ошибка системы**\n\nПроизошла неожиданная ошибка: {e}\n\nПожалуйста, попробуйте еще раз или обратитесь к администратору."
-        yield f"data: {json.dumps({'step': 'error', 'content': error_content}, ensure_ascii=False)}\n\n"
-
+        error_message = f"Критическая ошибка в процессе обработки запроса на этапе '{current_stage}': {str(e)}"
+        print(f"[EVENT_GENERATOR ERROR] {error_message}")
+        import traceback
+        traceback.print_exc()
+        yield {"type": "error", "stage": current_stage, "message": error_message}
     finally:
-        print("[Stream] Отправка сигнала о завершении.")
-        yield f"data: {json.dumps({'step': 'done', 'content': ''}, ensure_ascii=False)}\n\n"
+        yield {"type": "status", "stage": "done", "message": "Обработка запроса завершена."}
 
 # ==============================================================================
 # ЭНДПОИНТЫ (БЕЗ ИЗМЕНЕНИЙ)
@@ -562,8 +588,16 @@ async def process_query_stream(user_prompt: str, request: Request):
 
     print(f"\n[API] Получен запрос: {user_prompt}")
 
+    async def format_sse(data: dict) -> str:
+        """Format data as SSE message"""
+        return f"data: {json.dumps(data)}\n\n"
+
+    async def event_stream():
+        async for event in event_generator(user_prompt.strip(), duckdb_con):
+            yield await format_sse(event)
+
     return StreamingResponse(
-        event_generator(user_prompt.strip(), duckdb_con), 
+        event_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -584,28 +618,6 @@ async def health_check():
             return {"status": "unhealthy", "service": "text2sql-multi-agent", "database": "disconnected"}
     except Exception as e:
         return {"status": "unhealthy", "service": "text2sql-multi-agent", "error": str(e)}
-
-@app.get("/")
-async def root():
-    """Корневой эндпоинт"""
-    return {
-        "message": "Text2SQL Multi-Agent System with LLM-Enhanced Analysis", 
-        "version": "2.3.0",
-        "features": [
-            "Intelligent query coordination",
-            "Advanced anomaly detection with LLM analysis", 
-            "Automated ambiguity resolution",
-            "Multi-agent processing pipeline",
-            "Real-time streaming responses",
-            "LLM-generated structured summaries"
-        ],
-        "supported_queries": [
-            "Standard data analysis with intelligent summaries",
-            "Anomaly detection with expert-level insights",
-            "Statistical analysis with actionable recommendations",
-            "Data exploration with comprehensive reporting"
-        ]
-    }
 
 @app.get("/tables")
 async def get_available_tables():
@@ -650,6 +662,13 @@ async def startup_event():
         else:
             print("❌ Не удалось инициализировать базу данных")
             app.state.duckdb_con = None
+
+        # Initialize RAG database
+        print("Initializing RAG database for successful queries...")
+        if not init_rag_db():
+            print("[STARTUP ERROR] Failed to initialize RAG database. Application might not work as expected with RAG features.")
+        else:
+            print("RAG database initialized successfully.")
     except Exception as e:
         print(f"❌ Ошибка инициализации базы данных: {e}")
         app.state.duckdb_con = None
@@ -674,15 +693,55 @@ async def shutdown_event():
 # ЗАПУСК СЕРВЕРА
 # ==============================================================================
 
+# Move RagSaveRequest definition here, before the endpoint that uses it.
+class RagSaveRequest(BaseModel):
+    user_prompt: str
+    formal_prompt: str
+    plan: str
+    sql_query: str
+    final_answer: str
+
+@app.post("/llm_query/confirm_and_save")
+async def confirm_answer_and_save_to_rag(payload: RagSaveRequest):
+    """
+    Endpoint to confirm a user liked an answer and save it to the RAG database.
+    """
+    print(f"[API /confirm_and_save] Received request to save: {payload.user_prompt[:50]}...")
+    try:
+        # Run the synchronous add_to_rag_db in a thread pool to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, lambda: add_to_rag_db(
+            user_prompt=payload.user_prompt,
+            formal_prompt=payload.formal_prompt,
+            plan=payload.plan,
+            sql_query=payload.sql_query,
+            final_answer=payload.final_answer
+        ))
+
+        if success:
+            print(f"[API /confirm_and_save] Successfully saved to RAG: {payload.user_prompt[:50]}")
+            return JSONResponse(content={"status": "success", "message": "Answer saved to RAG successfully."}, status_code=200)
+        else:
+            print(f"[API /confirm_and_save] Failed to save to RAG: {payload.user_prompt[:50]}")
+            raise HTTPException(status_code=500, detail="Failed to save answer to RAG database.")
+    except Exception as e:
+        print(f"[API /confirm_and_save] Error during RAG save: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while saving to RAG: {str(e)}")
+
 if __name__ == "__main__":
     print("🚀 Запуск Text2SQL Multi-Agent System with LLM Analysis...")
+    # Ensure the static directory and index.html are checked at startup for debugging
+    if not os.path.isdir(STATIC_DIR):
+        print(f"[CRITICAL ERROR] Static directory not found: {STATIC_DIR}")
+    elif not os.path.exists(INDEX_HTML_PATH):
+        print(f"[CRITICAL ERROR] index.html not found in static directory: {INDEX_HTML_PATH}")
     
     import uvicorn
     uvicorn.run(
         app, 
         host="0.0.0.0", 
         port=5002,
-        reload=False,
+        reload=False, # Set to True for development if you want auto-reloading on code changes
         log_level="info",
         access_log=True
     )

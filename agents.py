@@ -2,6 +2,7 @@ import json
 import numpy as np
 import pandas as pd
 from giga_wrapper import call_giga_api_wrapper
+from rag_handler import query_rag_db
 
 # --- ОБНОВЛЕННЫЙ TABLE_CONTEXT ---
 TABLE_CONTEXT = """
@@ -41,6 +42,20 @@ TABLE_CONTEXT = """
 ПРИМЕЧАНИЕ ДЛЯ ГЕНЕРАЦИИ SQL: Всегда включай `municipal_district_name` в SELECT, если требуются названия территорий. Для строковых литералов в SQL используй одинарные кавычки. Убедись, что любая колонка, используемая в WHERE, SELECT, GROUP BY или ORDER BY, доступна из таблиц в FROM/JOIN и правильно квалифицирована алиасом.
 """
 
+# ==============================================================================
+# АГЕНТ RAG: ПОИСК В БАЗЕ УСПЕШНЫХ ЗАПРОСОВ
+# ==============================================================================
+def agent_rag_retriever(user_prompt: str):
+    """
+    Агент для поиска похожих запросов в базе данных RAG.
+    Возвращает результат от query_rag_db.
+    """
+    print(f"[AGENT RAG RETRIEVER] Querying RAG for prompt: {user_prompt[:100]}...")
+    rag_result = query_rag_db(user_prompt)
+    print(f"[AGENT RAG RETRIEVER] RAG Result: {rag_result.get('status')}")
+    if rag_result.get('status') == 'similar' or rag_result.get('status') == 'exact':
+        print(f"  [AGENT RAG RETRIEVER] Found matching data: {str(rag_result.get('data', {}))[:200]}...") # Log snippet of data
+    return rag_result
 
 # ==============================================================================
 # АГЕНТ 0: КООРДИНАТОР
@@ -93,14 +108,27 @@ def agent0_coordinator(user_prompt):
 # АГЕНТ 1: ПЕРЕФОРМУЛИРОВЩИК
 # ==============================================================================
 
-def agent1_rephraser(user_prompt):
+def agent1_rephraser(user_prompt: str, rag_context: dict = None):
     """Переформулирует запрос пользователя в формальный вопрос"""
+    rag_guidance = ""
+    if rag_context and isinstance(rag_context, dict) and rag_context.get('formal_prompt'):
+        rag_guidance = (
+            "Тебе также предоставлен контекст из очень похожего успешного прошлого запроса. "
+            "Если текущий пользовательский запрос семантически очень близок к 'user_prompt' из этого контекста, "
+            "ты можешь использовать 'formal_prompt' из этого контекста как основу или даже вернуть его с минимальными изменениями. "
+            "Однако, если текущий запрос значительно отличается, создай новый формальный вопрос, но можешь черпать вдохновение из стиля и структуры прошлого.\n"
+            f"Контекст прошлого запроса:\n"
+            f"  Proшлый user_prompt: {rag_context.get('user_prompt', 'N/A')}\n"
+            f"  Прошлый formal_prompt: {rag_context.get('formal_prompt', 'N/A')}\n\n"
+        )
+
     system_instruction = (
         "Ты — ИИ-ассистент. Переформулируй запрос пользователя в формальный, четкий вопрос для анализа данных на русском языке. "
+        f"{rag_guidance}"
         f"ВАЖНО: Если запрос касается аномалий но не указывает таблицу, предложи конкретную таблицу из доступных. "
         f"Доступные таблицы: population (население), salary (зарплаты), migration (миграция), "
         f"market_access (доступность рынков), connections (связи). "
-        f"Вывод должен содержать ТОЛЬКО переформулированный вопрос.\n\n{TABLE_CONTEXT}"
+        f"Вывод должен содержать ТОЛЬКО переформулированный вопрос.\\n\\n{TABLE_CONTEXT}"
     )
     return call_giga_api_wrapper(user_prompt, system_instruction)
 
@@ -109,12 +137,24 @@ def agent1_rephraser(user_prompt):
 # АГЕНТ 2: ПЛАНИРОВЩИК
 # ==============================================================================
 
-def agent2_planner(formal_prompt):
+def agent2_planner(formal_prompt: str, rag_context: dict = None):
     """Создает пошаговый план анализа данных"""
+    rag_guidance = ""
+    if rag_context and isinstance(rag_context, dict) and rag_context.get('plan'):
+        rag_guidance = (
+            "Тебе также предоставлен контекст из очень похожего успешного прошлого запроса, включая его план. "
+            "Используй этот прошлый план (`rag_context.plan`) как сильную основу для нового плана. "
+            "Адаптируй его под текущий формальный запрос, если есть небольшие отличия. "
+            "Если текущий запрос совершенно другой, создай новый план, но можешь учитывать структуру прошлого.\n"
+            f"Контекст прошлого запроса (план):\n{rag_context.get('plan', 'N/A')}\n"
+            f"Прошлый SQL (для информации о том, к чему привел план):\n{rag_context.get('sql_query', 'N/A')}\n\n"
+        )
+
     system_instruction = (
         "Ты — ИИ-планировщик. На основе формального запроса создай краткий, пронумерованный пошаговый план на русском языке. "
+        f"{rag_guidance}"
         "Используй TABLE_CONTEXT. Вывод должен содержать ТОЛЬКО план. НЕ ВКЛЮЧАЙ SQL."
-        f"\n\n{TABLE_CONTEXT}"
+        f"\\n\\n{TABLE_CONTEXT}"
     )
     return call_giga_api_wrapper(formal_prompt, system_instruction)
 
@@ -123,10 +163,24 @@ def agent2_planner(formal_prompt):
 # АГЕНТ 3: ГЕНЕРАТОР SQL (С ПОДДЕРЖКОЙ АНОМАЛИЙ)
 # ==============================================================================
 
-def agent3_sql_generator(plan):
+def agent3_sql_generator(plan: str, rag_context: dict = None):
     """Генерирует SQL-запрос на основе плана с учетом анализа аномалий"""
+    rag_guidance = ""
+    if rag_context and isinstance(rag_context, dict) and rag_context.get('sql_query'):
+        rag_guidance = (
+            "Тебе также предоставлен контекст из очень похожего успешного прошлого запроса, включая его SQL-запрос. "
+            "Если текущий план очень похож на тот, что привел к прошлому SQL (см. `rag_context.plan`), "
+            "используй прошлый SQL-запрос (`rag_context.sql_query`) как очень сильную основу. "
+            "Адаптируй его под текущий план, если есть небольшие отличия в именах столбцов, условиях фильтрации и т.д. "
+            "Убедись, что новый SQL соответствует ТЕКУЩЕМУ плану. "
+            "Если текущий план сильно отличается, сгенерируй SQL с нуля.\n"
+            f"Контекст прошлого запроса (план):\n{rag_context.get('plan', 'N/A')}\n"
+            f"Контекст прошлого запроса (SQL):\n```sql\n{rag_context.get('sql_query', 'N/A')}\n```\n\n"
+        )
+    
     system_instruction = (
         "Ты — эксперт по генерации SQL. На основе плана и TABLE_CONTEXT сгенерируй SQL-запрос. "
+        f"{rag_guidance}"
         "ВАЖНО: ВСЕГДА используй алиасы для таблиц (например, `p` для `population`, `ma` для `market_access`, `s` для `salary`, `mig` для `migration`, `c` для `connections`) и ВСЕГДА квалифицируй КАЖДОЕ имя столбца этим алиасом (например, `p.year`, `md.territory_id`, `s.value` для зарплаты). Это КРИТИЧЕСКИ важно для избежания ошибок неоднозначности, особенно для `territory_id` и `year`. "
 
         "КРИТИЧЕСКИ ВАЖНО - ПРАВИЛА ДЛЯ ПОИСКА ПО НАЗВАНИЯМ МУНИЦИПАЛИТЕТОВ: "
@@ -391,14 +445,24 @@ def generate_anomaly_description(anomalies, user_prompt):
 
 
 # ==============================================================================
-# АГЕНТ 6: ГЕНЕРАТОР ОТВЕТОВ (ОПЦИОНАЛЬНЫЙ)
+# АГЕНТ 6: ГЕНЕРАТОР ОТВЕТА
 # ==============================================================================
 
-def agent4_answer_generator(sql_result_df, initial_user_prompt, anomaly_results=None, trend_results=None):
-    """Генерирует финальный ответ на основе данных, аномалий и трендов"""
+def agent4_answer_generator(sql_result_df, initial_user_prompt: str, query_plan: str, sql_query: str, rag_context: dict = None):
+    """Генерирует текстовый ответ на основе результатов SQL и первоначального запроса."""
+    rag_guidance = ""
+    if rag_context and isinstance(rag_context, dict) and rag_context.get('final_answer'):
+        rag_guidance = (
+            "Тебе также предоставлен контекст из очень похожего успешного прошлого запроса, включая его финальный ответ. "
+            "Используй стиль, тон и структуру прошлого ответа (`rag_context.final_answer`) как хороший пример. "
+            "Однако, убедись, что ТЕКУЩИЙ ответ ТОЧНО отражает предоставленные РЕЗУЛЬТАТЫ SQL (`sql_result_df`), "
+            "а не данные из прошлого ответа. Адаптируй формулировки под текущие данные.\n"
+            f"Контекст прошлого запроса (финальный ответ):\n{rag_context.get('final_answer', 'N/A')}\n\n"
+        )
+
     if sql_result_df is None:
-        return "К сожалению, не удалось получить данные из-за ошибки SQL."
-    if sql_result_df.empty:
+        return "К сожалению, не удалось получить данные для вашего запроса."
+    if sql_result_df.empty: 
         return "По вашему запросу данные не найдены."
 
     # Подготовка данных для LLM

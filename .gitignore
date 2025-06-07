@@ -5,3 +5,6 @@ venv
 __pycache__
 frontend
 .DS_Store
+gigachat_qa.ipynb
+rag.py
+chroma_db_persistent
