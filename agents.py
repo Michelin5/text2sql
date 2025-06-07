@@ -109,28 +109,290 @@ def agent0_coordinator(user_prompt):
 # ==============================================================================
 
 def agent1_rephraser(user_prompt: str, rag_context: dict = None):
-    """Переформулирует запрос пользователя в формальный вопрос"""
+    """
+    Переформулирует запрос пользователя в формальный вопрос с консервативным использованием RAG
+    и поддержкой 90% совпадений на основе исследований multi-agent query reformulation
+    """
+    
+    # ПРОВЕРКА 90% СОВПАДЕНИЯ С ПРОШЛЫМ ЗАПРОСОМ
+    if rag_context and isinstance(rag_context, dict) and rag_context.get('user_prompt'):
+        similarity_score = calculate_query_similarity(user_prompt, rag_context.get('user_prompt', ''))
+        
+        print(f"[REPHRASER] Сходство запросов: {similarity_score:.3f}")
+        
+        # Если 90%+ совпадение - возвращаем прошлую формализацию
+        if similarity_score >= 0.90:
+            past_formal = rag_context.get('formal_prompt', '')
+            if past_formal:
+                print(f"[REPHRASER] 90%+ совпадение - используем прошлую формализацию")
+                return past_formal
+    
+    # КОНСЕРВАТИВНОЕ RAG guidance на основе исследований semantic matching
     rag_guidance = ""
     if rag_context and isinstance(rag_context, dict) and rag_context.get('formal_prompt'):
-        rag_guidance = (
-            "Тебе также предоставлен контекст из очень похожего успешного прошлого запроса. "
-            "Если текущий пользовательский запрос семантически очень близок к 'user_prompt' из этого контекста, "
-            "ты можешь использовать 'formal_prompt' из этого контекста как основу или даже вернуть его с минимальными изменениями. "
-            "Однако, если текущий запрос значительно отличается, создай новый формальный вопрос, но можешь черпать вдохновение из стиля и структуры прошлого.\n"
-            f"Контекст прошлого запроса:\n"
-            f"  Proшлый user_prompt: {rag_context.get('user_prompt', 'N/A')}\n"
-            f"  Прошлый formal_prompt: {rag_context.get('formal_prompt', 'N/A')}\n\n"
-        )
+        # Проверяем семантическую близость для contextual enrichment
+        current_keywords = set(_normalize_query_tokens(user_prompt.lower().split()))
+        past_keywords = set(_normalize_query_tokens(rag_context.get('user_prompt', '').lower().split()))
+        
+        # Semantic matching threshold на основе исследований
+        keyword_overlap = len(current_keywords.intersection(past_keywords)) / max(len(current_keywords), 1)
+        
+        # СТРОГИЙ порог для RAG контекста (70%+ совпадение по ключевым словам)
+        if keyword_overlap > 0.7:
+            rag_guidance = (
+                "ВАЖНО: Используй предоставленный контекст ТОЛЬКО как стилистическое руководство. "
+                "Твоя основная задача - формализовать ТЕКУЩИЙ запрос пользователя. "
+                "НЕ копируй прошлый formal_prompt, а создай новый на основе ТЕКУЩЕГО запроса.\n"
+                f"Стилистический пример (для понимания подхода):\n"
+                f"  Прошлый запрос: {rag_context.get('user_prompt', 'N/A')}\n"
+                f"  Как был формализован: {rag_context.get('formal_prompt', 'N/A')}\n"
+                f"Используй этот СТИЛЬ, но формализуй ТЕКУЩИЙ запрос: '{user_prompt}'\n\n"
+            )
+        else:
+            # Query simplification approach - игнорируем несмежный RAG
+            rag_guidance = (
+                "Предоставленный контекст из прошлого запроса не релевантен текущему. "
+                "Сосредоточься ТОЛЬКО на формализации текущего запроса пользователя.\n\n"
+            )
 
-    system_instruction = (
-        "Ты — ИИ-ассистент. Переформулируй запрос пользователя в формальный, четкий вопрос для анализа данных на русском языке. "
-        f"{rag_guidance}"
-        f"ВАЖНО: Если запрос касается аномалий но не указывает таблицу, предложи конкретную таблицу из доступных. "
-        f"Доступные таблицы: population (население), salary (зарплаты), migration (миграция), "
-        f"market_access (доступность рынков), connections (связи). "
-        f"Вывод должен содержать ТОЛЬКО переформулированный вопрос.\\n\\n{TABLE_CONTEXT}"
-    )
-    return call_giga_api_wrapper(user_prompt, system_instruction)
+    # SYSTEM INSTRUCTION на основе multi-agent query reformulation research
+    system_instruction = f"""
+Ты — эксперт по переформулировке запросов на основе исследований query reformulation и semantic matching.
+
+{rag_guidance}
+
+КРИТИЧЕСКИ ВАЖНО (основано на исследованиях query reformulation):
+1. ВСЕГДА формализуй ТЕКУЩИЙ запрос: "{user_prompt}"
+2. Применяй методы contextual enrichment и query expansion
+3. Сохраняй ВСЕ ключевые намерения пользователя (intent preservation)
+4. Используй semantic matching для улучшения точности
+5. Делай минимальные изменения - только для ясности (query simplification)
+
+МЕТОДЫ ФОРМАЛИЗАЦИИ (на основе исследований):
+- Contextual Enrichment: добавь контекст если неясно ("данные" → "данные о населении")
+- Query Expansion: уточни неопределенные термины ("топ 5" → "топ 5 регионов по показателю")
+- Temporal Context: сохрани временные рамки если указаны
+- Entity Recognition: укажи подходящую таблицу если понятно из контекста
+
+ДОСТУПНЫЕ ТАБЛИЦЫ (для entity recognition):
+- population: данные о населении (территория, год, пол, возраст, значение)
+- salary: зарплаты (территория, год, экономическая деятельность, значение)
+- migration: миграция (территория, год, пол, тип миграции, значение)
+- market_access: доступность рынков (территория, значение)
+- connections: связи (территория, год, значение)
+
+ПРИМЕРЫ КОНСЕРВАТИВНОЙ ФОРМАЛИЗАЦИИ (semantic matching):
+- "Найди аномалии" → "Какие аномальные значения присутствуют в данных о населении?"
+- "Топ зарплат" → "Какие 5 регионов имеют самые высокие средние зарплаты?"
+- "Тренды населения" → "Как изменялась численность населения по годам?"
+
+ПРИНЦИПЫ (из исследований):
+- Intent preservation: сохраняй намерение пользователя
+- Semantic alignment: выравнивай с доменной терминологией  
+- Contextual clarity: добавляй контекст только при необходимости
+- Minimal modification: минимальные изменения для максимальной ясности
+
+Ответь ТОЛЬКО формализованным вопросом без дополнительных пояснений.
+"""
+
+    try:
+        from giga_wrapper import call_giga_api_wrapper
+        
+        # Iterative refinement approach - простой промпт для фокуса на текущем запросе
+        prompt = f"""
+Исходный запрос пользователя: "{user_prompt}"
+
+Применяя методы semantic matching и contextual enrichment, сформулируй четкий формальный вопрос для анализа данных, точно сохраняя все намерения пользователя.
+"""
+        
+        formal_prompt_result = call_giga_api_wrapper(prompt, system_instruction)
+        
+        # ВАЛИДАЦИЯ качества переформулировки (на основе исследований)
+        if not _validate_reformulation_quality(user_prompt, formal_prompt_result):
+            print(f"[REPHRASER WARNING] Переформулировка может быть неточной. Используем консервативный fallback.")
+            return _conservative_semantic_fallback(user_prompt)
+        
+        # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: нет ли подмены запроса
+        if _is_query_substitution(user_prompt, formal_prompt_result, rag_context):
+            print(f"[REPHRASER WARNING] Обнаружена подмена запроса. Используем консервативный подход.")
+            return _conservative_semantic_fallback(user_prompt)
+        
+        return formal_prompt_result.strip()
+    
+    except Exception as e:
+        print(f"[REPHRASER ERROR] Ошибка переформулировки: {e}")
+        return _conservative_semantic_fallback(user_prompt)
+
+def calculate_query_similarity(query1: str, query2: str) -> float:
+    """
+    Вычисляет семантическую близость запросов на основе исследований similarity search
+    """
+    if not query1 or not query2:
+        return 0.0
+    
+    query1_lower = query1.lower().strip()
+    query2_lower = query2.lower().strip()
+    
+    # Точное совпадение
+    if query1_lower == query2_lower:
+        return 1.0
+    
+    # Semantic matching через токенизацию
+    tokens1 = set(_normalize_query_tokens(query1_lower.split()))
+    tokens2 = set(_normalize_query_tokens(query2_lower.split()))
+    
+    if not tokens1 or not tokens2:
+        return 0.0
+    
+    # Jaccard similarity (базовое пересечение)
+    intersection = tokens1.intersection(tokens2)
+    union = tokens1.union(tokens2)
+    jaccard_sim = len(intersection) / len(union) if union else 0.0
+    
+    # Weighted semantic matching (важные слова имеют больший вес)
+    domain_keywords = ['аномали', 'топ', 'анализ', 'данные', 'населен', 'зарплат', 'мигра', 'тренд', 'выброс', 'рейтинг']
+    semantic_matches = sum(1 for word in domain_keywords if word in query1_lower and word in query2_lower)
+    semantic_weight = semantic_matches * 0.15
+    
+    # Positional similarity (учет порядка слов)
+    positional_sim = _calculate_positional_similarity(query1_lower.split(), query2_lower.split())
+    
+    # Length ratio penalty (штраф за разную длину)
+    len_ratio = min(len(query1_lower), len(query2_lower)) / max(len(query1_lower), len(query2_lower))
+    length_bonus = len_ratio * 0.1
+    
+    # Итоговый скор semantic matching
+    final_similarity = jaccard_sim * 0.6 + semantic_weight + positional_sim * 0.2 + length_bonus
+    
+    return min(1.0, final_similarity)
+
+def _normalize_query_tokens(tokens: list) -> list:
+    """Нормализует токены для semantic matching"""
+    stop_words = {'в', 'на', 'по', 'для', 'из', 'с', 'и', 'а', 'но', 'или', 'что', 'как', 'где', 'когда'}
+    normalized = []
+    
+    for token in tokens:
+        # Очистка от пунктуации
+        clean_token = ''.join(char for char in token if char.isalnum())
+        if clean_token and clean_token not in stop_words and len(clean_token) > 1:
+            # Простой stemming (убираем окончания)
+            if clean_token.endswith(('ах', 'ях', 'ами', 'ями')):
+                clean_token = clean_token[:-3]
+            elif clean_token.endswith(('ов', 'ев', 'ах', 'ям', 'ми')):
+                clean_token = clean_token[:-2]
+            elif clean_token.endswith(('а', 'я', 'е', 'и', 'о', 'у', 'ы')):
+                clean_token = clean_token[:-1]
+            
+            normalized.append(clean_token)
+    
+    return normalized
+
+def _calculate_positional_similarity(tokens1: list, tokens2: list) -> float:
+    """Positional similarity для учета порядка слов"""
+    if not tokens1 or not tokens2:
+        return 0.0
+    
+    common_tokens = set(tokens1).intersection(set(tokens2))
+    if not common_tokens:
+        return 0.0
+    
+    position_matches = 0
+    for token in common_tokens:
+        try:
+            pos1 = tokens1.index(token) / len(tokens1)
+            pos2 = tokens2.index(token) / len(tokens2)
+            # Близкие позиции дают бонус
+            if abs(pos1 - pos2) < 0.3:
+                position_matches += 1
+        except (ValueError, ZeroDivisionError):
+            continue
+    
+    return position_matches / len(common_tokens) if common_tokens else 0.0
+
+def _validate_reformulation_quality(original_prompt: str, reformulated_prompt: str) -> bool:
+    """Валидация качества переформулировки на основе исследований"""
+    
+    if not reformulated_prompt or len(reformulated_prompt.strip()) == 0:
+        return False
+    
+    # Semantic preservation check
+    original_words = set(_normalize_query_tokens(original_prompt.lower().split()))
+    reformulated_words = set(_normalize_query_tokens(reformulated_prompt.lower().split()))
+    
+    # Должно быть хотя бы 40% общих семантических единиц
+    common_words = original_words.intersection(reformulated_words)
+    overlap_ratio = len(common_words) / max(len(original_words), 1)
+    
+    if overlap_ratio < 0.4:
+        return False
+    
+    # Intent preservation check - ключевые индикаторы намерения
+    intent_indicators = ['аномали', 'топ', 'тренд', 'анализ', 'зарплат', 'населен', 'мигра', 'выброс', 'рейтинг']
+    original_intent = [ind for ind in intent_indicators if ind in original_prompt.lower()]
+    reformulated_intent = [ind for ind in intent_indicators if ind in reformulated_prompt.lower()]
+    
+    # Если в оригинале были ключевые намерения, они должны сохраниться
+    if original_intent and not any(intent in reformulated_intent for intent in original_intent):
+        return False
+    
+    return True
+
+def _is_query_substitution(original_prompt: str, reformulated_prompt: str, rag_context: dict = None) -> bool:
+    """Проверяет, не произошла ли подмена запроса на прошлый из RAG"""
+    
+    if not rag_context or not rag_context.get('user_prompt'):
+        return False
+    
+    past_prompt = rag_context.get('user_prompt', '')
+    past_formal = rag_context.get('formal_prompt', '')
+    
+    # Проверяем, не слишком ли формализация похожа на прошлую
+    if past_formal and reformulated_prompt:
+        past_similarity = calculate_query_similarity(reformulated_prompt, past_formal)
+        current_similarity = calculate_query_similarity(reformulated_prompt, original_prompt)
+        
+        # Если формализация больше похожа на прошлую, чем на текущую - подозрение на подмену
+        if past_similarity > current_similarity + 0.3:
+            return True
+    
+    return False
+
+def _conservative_semantic_fallback(user_prompt: str) -> str:
+    """Консервативная резервная формализация на основе semantic patterns"""
+    
+    prompt_lower = user_prompt.lower()
+    
+    # Semantic pattern matching для доменных задач
+    if any(word in prompt_lower for word in ['аномали', 'выброс', 'необычн', 'странн']):
+        if any(word in prompt_lower for word in ['населен', 'демограф', 'людей']):
+            return f"Какие аномальные значения присутствуют в данных о населении?"
+        elif any(word in prompt_lower for word in ['зарплат', 'заработ', 'доход']):
+            return f"Какие аномальные значения присутствуют в данных о зарплатах?"
+        elif any(word in prompt_lower for word in ['мигра', 'переезд']):
+            return f"Какие аномальные значения присутствуют в миграционных данных?"
+        else:
+            return f"Какие аномальные значения присутствуют в данных?"
+    
+    elif any(word in prompt_lower for word in ['топ', 'лучш', 'высок', 'рейтинг', 'максимальн']):
+        if any(word in prompt_lower for word in ['зарплат', 'заработ', 'доход']):
+            return f"Какие регионы имеют самые высокие показатели по зарплатам?"
+        elif any(word in prompt_lower for word in ['населен', 'демограф']):
+            return f"Какие регионы имеют самые высокие показатели по населению?"
+        else:
+            return f"Какие регионы имеют самые высокие показатели?"
+    
+    elif any(word in prompt_lower for word in ['тренд', 'динамик', 'изменени', 'временн']):
+        if any(word in prompt_lower for word in ['населен', 'демограф']):
+            return f"Как изменялась численность населения по годам?"
+        elif any(word in prompt_lower for word in ['зарплат', 'заработ']):
+            return f"Как изменялись зарплаты по годам?"
+        else:
+            return f"Как изменялись показатели по годам?"
+    
+    else:
+        # Минимальная contextual enrichment
+        return f"Проанализируйте данные согласно запросу: {user_prompt}"
+
 
 
 # ==============================================================================
