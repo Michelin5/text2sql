@@ -1,0 +1,54 @@
+:root {
+    --radius: 0.5rem;
+}
+.gradient-bg {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+.gradient-anomaly {
+    background: linear-gradient(135deg, #ff6b6b 0%, #ffa726 100%);
+}
+.gradient-success {
+    background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);
+}
+.gradient-warning {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+.gradient-info {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+}
+.card-shadow {
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+}
+.card-shadow-lg {
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+.sql-block {
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+.loading-spinner {
+    border: 2px solid #f3f4f6;
+    border-top: 2px solid #3b82f6;
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+.step-completed {
+    /* Это использует Tailwind — если в чистом CSS, то можешь добавить так: */
+    border-left: 4px solid #22c55e; /* green-500 */
+    background: #f0fdf4; /* green-50 */
+}
+.step-active {
+    border-left: 4px solid #3b82f6; /* blue-500 */
+    background: #f0f9ff; /* blue-50 */
+}
+.step-pending {
+    border-left: 4px solid #d1d5db; /* gray-300 */
+    background: #f9fafb; /* gray-50 */
+}
