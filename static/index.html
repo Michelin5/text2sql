@@ -385,20 +385,7 @@
             finalAnswer: document.getElementById('finalAnswerOutput')
         };
         
-        // Определяем базовый URL для API в зависимости от окружения
-        let API_BASE_URL;
-
-        // Если приложение запущено на localhost (или 127.0.0.1)
-        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-            // Для локальной разработки, напрямую обращаемся к Uvicorn
-            API_BASE_URL = 'http://127.0.0.1:5002';
-        } else {
-            // Для развернутой версии, используем Nginx прокси
-            API_BASE_URL = 'https://redivo.ru/sberindex-fcs-vibes';
-        }
-
-        const BACKEND_API_URL = `${API_BASE_URL}/process_query_stream`;
-        const RAG_SAVE_URL = `${API_BASE_URL}/llm_query/confirm_and_save`;
+        const BACKEND_API_URL = 'http://127.0.0.1:5002/process_query_stream';
 
         let eventSource;
 
@@ -802,7 +789,7 @@
             saveToRagStatusEl.className = 'mt-2 text-xs text-center text-blue-600';
 
             try {
-                const response = await fetch(RAG_SAVE_URL, {
+                const response = await fetch('/llm_query/confirm_and_save', { 
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
