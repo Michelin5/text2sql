@@ -430,385 +430,64 @@ def agent2_planner(formal_prompt: str, rag_context: dict = None):
 # АГЕНТ 3: ГЕНЕРАТОР SQL (С ПОДДЕРЖКОЙ АНОМАЛИЙ)
 # ==============================================================================
 
-def agent3_sql_generator_advanced(plan: str, rag_context: dict = None, user_prompt: str = ""):
-    """Радикально улучшенный SQL генератор с многоуровневой архитектурой"""
+def agent3_sql_generator(plan: str, rag_context: dict = None):
+    """Генерирует SQL-запрос на основе плана с учетом анализа аномалий"""
+    rag_guidance = ""
+    if rag_context and isinstance(rag_context, dict) and rag_context.get('sql_query'):
+        rag_guidance = (
+            "Тебе также предоставлен контекст из очень похожего успешного прошлого запроса, включая его SQL-запрос. "
+            "Если текущий план очень похож на тот, что привел к прошлому SQL (см. `rag_context.plan`), "
+            "используй прошлый SQL-запрос (`rag_context.sql_query`) как очень сильную основу. "
+            "Адаптируй его под текущий план, если есть небольшие отличия в именах столбцов, условиях фильтрации и т.д. "
+            "Убедись, что новый SQL соответствует ТЕКУЩЕМУ плану. "
+            "Если текущий план сильно отличается, сгенерируй SQL с нуля.\n"
+            f"Контекст прошлого запроса (план):\n{rag_context.get('plan', 'N/A')}\n"
+            f"Контекст прошлого запроса (SQL):\n```sql\n{rag_context.get('sql_query', 'N/A')}\n```\n\n"
+        )
     
-    # ЭТАП 1: Интеллектуальный анализ намерения запроса
-    query_intent = analyze_query_intent_advanced(plan, user_prompt)
-    
-    # ЭТАП 2: Контекстно-зависимая генерация схемы
-    optimized_schema = generate_context_aware_schema(query_intent, rag_context)
-    
-    # ЭТАП 3: Итеративная генерация с самопроверкой
-    sql_candidates = generate_multiple_sql_candidates(plan, optimized_schema, rag_context)
-    
-    # ЭТАП 4: AI-driven оптимизация и ранжирование
-    optimized_sql = optimize_and_rank_candidates(sql_candidates, query_intent)
-    
-    # ЭТАП 5: Финальная валидация с explanation
-    return validate_and_explain_sql(optimized_sql, query_intent)
+    system_instruction = (
+        "Ты — эксперт по генерации SQL. На основе плана и TABLE_CONTEXT сгенерируй SQL-запрос. "
+        f"{rag_guidance}"
+        "ВАЖНО: ВСЕГДА используй алиасы для таблиц (например, `p` для `population`, `ma` для `market_access`, `s` для `salary`, `mig` для `migration`, `c` для `connections`) и ВСЕГДА квалифицируй КАЖДОЕ имя столбца этим алиасом (например, `p.year`, `md.territory_id`, `s.value` для зарплаты). Это КРИТИЧЕСКИ важно для избежания ошибок неоднозначности, особенно для `territory_id` и `year`. "
 
-def analyze_query_intent_advanced(plan: str, user_prompt: str) -> dict:
-    """Продвинутый анализ намерения запроса на основе NLP"""
-    
-    intent_system = """
-Ты — эксперт по анализу SQL намерений. Определи детальный контекст запроса.
+        "КРИТИЧЕСКИ ВАЖНО - ПРАВИЛА ДЛЯ ПОИСКА ПО НАЗВАНИЯМ МУНИЦИПАЛИТЕТОВ: "
+        "Каждая таблица содержит столбцы `territory_id` И `municipal_district_name`. "
+        "НИКОГДА НЕ используй точное сравнение (=) для поиска по названиям муниципалитетов! "
+        "ВСЕГДА используй ТОЛЬКО нечеткий поиск через UPPER() и LIKE с процентами. "
+        "Когда в запросе упоминается любое название места (Майкоп, Ломоносовском, майкопа, округа майкопа и т.д.), "
+        "ты ОБЯЗАТЕЛЬНО должен: "
+        "1. Извлечь ключевое слово из названия (например, из 'Ломоносовском' извлечь 'ЛОМОНОСОВ') "
+        "2. Использовать ТОЛЬКО такой паттерн: WHERE UPPER(table_alias.municipal_district_name) LIKE '%КЛЮЧЕВОЕ_СЛОВО%' "
+        "ЗАПРЕЩЕННЫЕ примеры: "
+        "- WHERE p.municipal_district_name = 'Майкоп' "
+        "- WHERE p.municipal_district_name = 'Ломоносовский' "
+        "ПРАВИЛЬНЫЕ примеры: "
+        "- WHERE UPPER(p.municipal_district_name) LIKE '%МАЙКОП%' "
+        "- WHERE UPPER(p.municipal_district_name) LIKE '%ЛОМОНОСОВ%' "
+        "Это найдет и 'Ломоносовский', и 'Ломоносовский муниципальный район', и любые другие варианты. "
+        "Это обязательно для всех географических названий без исключений! "
+        "ВСЕГДА включай столбец municipal_district_name в SELECT для отображения полного названия МО. "
 
-АНАЛИЗИРУЙ:
-1. Тип операции (SELECT, aggregation, JOIN pattern)
-2. Временные рамки и фильтры
-3. Ожидаемый объем данных (LIMIT стратегия)
-4. Потребность в индексах
-5. Паттерны производительности
+        "ОСОБЫЕ ПРАВИЛА ДЛЯ АНОМАЛИЙ: "
+        "Если план касается поиска аномалий, выбросов или необычных значений, "
+        "НЕ включай в SQL логику фильтрации аномалий (WHERE value < lower_bound OR value > upper_bound). "
+        "Вместо этого создай простой SELECT запрос, который возвращает ВСЕ данные из соответствующей таблицы "
+        "с необходимыми JOIN для получения названий территорий. "
+        "Агент аномалий выполнит анализ на полученных данных самостоятельно. "
 
-Ответь JSON:
-{
-    "operation_type": "analytical/transactional/reporting",
-    "data_scale": "small/medium/large/massive",
-    "performance_priority": "speed/accuracy/memory",
-    "join_complexity": "none/simple/complex/multi_table",
-    "aggregation_pattern": "none/basic/window_functions/advanced",
-    "indexing_needs": ["column1", "column2"],
-    "optimization_hints": ["use_limit", "prefer_joins", "avoid_subqueries"]
-}
-"""
-    
-    prompt = f"""
-План: {plan}
-Исходный запрос: {user_prompt}
+        "Вывод должен быть ТОЛЬКО SQL-запрос в блоке ``````."
+        f"\n\n{TABLE_CONTEXT}"
+    )
 
-Проанализируй намерение и дай рекомендации по оптимизации.
-"""
-    
-    try:
-        response = call_giga_api_wrapper(prompt, intent_system)
-        return json.loads(response)
-    except:
-        return {
-            "operation_type": "analytical",
-            "data_scale": "medium", 
-            "performance_priority": "speed",
-            "join_complexity": "simple",
-            "aggregation_pattern": "basic",
-            "indexing_needs": [],
-            "optimization_hints": ["use_limit"]
-        }
-
-def generate_context_aware_schema(query_intent: dict, rag_context: dict = None) -> str:
-    """Генерирует оптимизированную схему на основе контекста"""
-    
-    base_schema = TABLE_CONTEXT
-    
-    # Динамическая оптимизация схемы по намерению
-    if query_intent.get("data_scale") == "massive":
-        schema_optimization = """
-ОПТИМИЗАЦИЯ ДЛЯ БОЛЬШИХ ДАННЫХ:
-- ОБЯЗАТЕЛЬНО используй LIMIT для всех SELECT
-- Предпочитай индексированные столбцы в WHERE
-- Избегай SELECT * полностью
-- Используй партиционирование по датам если доступно
-"""
-    elif query_intent.get("performance_priority") == "speed":
-        schema_optimization = """
-ОПТИМИЗАЦИЯ СКОРОСТИ:
-- Минимизируй количество JOIN
-- Используй EXISTS вместо IN для больших наборов
-- Предпочитай INNER JOIN над LEFT JOIN
-- Ограничивай результаты через LIMIT
-"""
-    else:
-        schema_optimization = """
-БАЗОВАЯ ОПТИМИЗАЦИЯ:
-- Используй алиасы для всех таблиц
-- Квалифицируй все столбцы
-- Добавляй LIMIT для безопасности
-"""
-    
-    # Интеграция RAG контекста
-    rag_enhancement = ""
-    if rag_context and rag_context.get('sql_query'):
-        rag_enhancement = f"""
-УСПЕШНЫЙ ПАТТЕРН ИЗ ПРОШЛОГО:
-{rag_context.get('sql_query', '')}
-
-Используй этот паттерн как основу если применимо.
-"""
-    
-    return f"{base_schema}\n\n{schema_optimization}\n\n{rag_enhancement}"
-
-def generate_multiple_sql_candidates(plan: str, schema: str, rag_context: dict = None) -> list:
-    """Генерирует несколько вариантов SQL для выбора лучшего"""
-    
-    candidates = []
-    
-    # Кандидат 1: Консервативный подход
-    conservative_system = f"""
-Ты — консервативный SQL эксперт. Генерируй БЕЗОПАСНЫЙ SQL.
-
-ПРИОРИТЕТЫ:
-- Читаемость над производительностью
-- Простые JOIN вместо сложных
-- Обязательные LIMIT
-- Базовые агрегации
-
-{schema}
-"""
-    
-    # Кандидат 2: Оптимизированный подход
-    optimized_system = f"""
-Ты — эксперт по SQL оптимизации. Генерируй БЫСТРЫЙ SQL.
-
-ПРИОРИТЕТЫ:
-- Максимальная производительность
-- Умные индексы и JOIN
-- Window functions где уместно
-- Продвинутые техники
-
-{schema}
-"""
-    
-    # Кандидат 3: RAG-основанный подход
-    rag_system = f"""
-Ты — адаптивный SQL эксперт. Используй ПРОВЕРЕННЫЕ паттерны.
-
-КОНТЕКСТ: {rag_context}
-
-ПРИОРИТЕТЫ:
-- Адаптация успешных паттернов
-- Проверенные решения
-- Минимальные модификации работающего кода
-
-{schema}
-"""
-    
-    systems = [
-        ("conservative", conservative_system),
-        ("optimized", optimized_system), 
-        ("rag_based", rag_system) if rag_context else ("optimized", optimized_system)
-    ]
-    
-    for approach, system in systems:
+    sql_query_block = call_giga_api_wrapper(plan, system_instruction)
+    if sql_query_block and "```" in sql_query_block:
         try:
-            response = call_giga_api_wrapper(plan, system)
-            sql = extract_sql_from_response(response)
-            if sql:
-                candidates.append({
-                    "approach": approach,
-                    "sql": sql,
-                    "confidence": calculate_sql_confidence(sql, plan)
-                })
-        except Exception as e:
-            print(f"[SQL_GENERATOR] Ошибка в {approach}: {e}")
-    
-    return candidates
-
-def optimize_and_rank_candidates(candidates: list, query_intent: dict) -> str:
-    """Оптимизирует и ранжирует SQL кандидатов"""
-    
-    if not candidates:
-        return generate_fallback_sql(query_intent)
-    
-    # Скоринг кандидатов
-    for candidate in candidates:
-        sql = candidate["sql"]
-        score = 0
-        
-        # Критерии качества SQL
-        if "LIMIT" in sql.upper():
-            score += 20
-        if "JOIN" in sql.upper():
-            score += 15
-        if sql.count("SELECT") == 1:  # Один SELECT лучше подзапросов
-            score += 10
-        if "WHERE" in sql.upper():
-            score += 10
-        if len(sql.split()) < 50:  # Краткость - сестра таланта
-            score += 10
-        
-        # Бонус за соответствие намерению
-        if query_intent.get("performance_priority") == "speed" and candidate["approach"] == "optimized":
-            score += 25
-        if query_intent.get("data_scale") == "large" and "LIMIT" in sql.upper():
-            score += 15
-        
-        candidate["final_score"] = score + candidate["confidence"]
-    
-    # Выбираем лучший кандидат
-    best_candidate = max(candidates, key=lambda x: x["final_score"])
-    
-    # Финальная оптимизация лучшего кандидата
-    return apply_final_optimizations(best_candidate["sql"], query_intent)
-
-def apply_final_optimizations(sql: str, query_intent: dict) -> str:
-    """Применяет финальные оптимизации к SQL"""
-    
-    optimization_system = f"""
-Ты — SQL оптимизатор. Примени финальные улучшения.
-
-НАМЕРЕНИЕ: {query_intent}
-
-ТЕХНИКИ ОПТИМИЗАЦИИ:
-1. Добавь LIMIT если отсутствует
-2. Оптимизируй ORDER BY с индексами
-3. Замени подзапросы на JOIN где возможно
-4. Используй EXISTS вместо IN для больших наборов
-5. Добавь комментарии для сложных частей
-
-Верни только оптимизированный SQL.
-"""
-    
-    try:
-        optimized = call_giga_api_wrapper(f"SQL: {sql}", optimization_system)
-        return extract_sql_from_response(optimized) or sql
-    except:
-        return sql
-
-def validate_and_explain_sql(sql: str, query_intent: dict) -> dict:
-    """Валидирует SQL и объясняет логику"""
-    
-    validation_system = """
-Ты — SQL валидатор. Проверь SQL и объясни логику.
-
-ПРОВЕРЬ:
-1. Синтаксическую корректность
-2. Логическую последовательность
-3. Потенциальные проблемы производительности
-4. Соответствие best practices
-
-Ответь JSON:
-{
-    "is_valid": true/false,
-    "explanation": "Объяснение логики SQL",
-    "performance_notes": "Заметки по производительности",
-    "potential_issues": ["список потенциальных проблем"],
-    "confidence_score": 0-100
-}
-"""
-    
-    try:
-        response = call_giga_api_wrapper(f"SQL: {sql}", validation_system)
-        validation = json.loads(response)
-        validation["sql"] = sql
-        return validation
-    except:
-        return {
-            "sql": sql,
-            "is_valid": True,
-            "explanation": "SQL сгенерирован успешно",
-            "performance_notes": "Стандартная производительность",
-            "potential_issues": [],
-            "confidence_score": 75
-        }
-
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-
-def extract_sql_from_response(response: str) -> str:
-    """Извлекает SQL из ответа LLM"""
-    import re
-    
-    # Поиск SQL в блоках кода
-    sql_blocks = re.findall(r'``````', response, re.DOTALL | re.IGNORECASE)
-    if sql_blocks:
-        return sql_blocks[0].strip()
-    
-    # Поиск SQL без блоков
-    sql_match = re.search(r'(SELECT\s+.*?;)', response, re.DOTALL | re.IGNORECASE)
-    if sql_match:
-        return sql_match.group(1).strip()
-    
-    return response.strip()
-
-def calculate_sql_confidence(sql: str, plan: str) -> int:
-    """Вычисляет уверенность в качестве SQL"""
-    confidence = 50  # Базовая уверенность
-    
-    # Проверки качества
-    if "SELECT" in sql.upper():
-        confidence += 20
-    if "FROM" in sql.upper():
-        confidence += 15
-    if len(sql.split()) > 5:  # Минимальная сложность
-        confidence += 10
-    if ";" in sql:  # Правильное завершение
-        confidence += 5
-    
-    return min(confidence, 100)
-
-def generate_fallback_sql(query_intent: dict) -> str:
-    """Генерирует резервный SQL если основная генерация не удалась"""
-    
-    data_scale = query_intent.get("data_scale", "medium")
-    limit_value = {"small": 10, "medium": 50, "large": 100, "massive": 200}.get(data_scale, 50)
-    
-    return f"""
--- Резервный безопасный SQL запрос
-SELECT 
-    p.territory_id,
-    p.municipal_district_name,
-    p.year,
-    p.value
-FROM population AS p
-WHERE p.year >= 2023
-  AND p.value IS NOT NULL
-ORDER BY p.value DESC
-LIMIT {limit_value};
-"""
-def apply_query_optimization_patterns(sql: str, performance_data: dict = None) -> str:
-    """Применяет паттерны оптимизации на основе AI рекомендаций"""
-    
-    optimization_system = """
-Ты — AI SQL оптимизатор. Примени современные техники оптимизации.
-
-ТЕХНИКИ 2024-2025:
-1. Index-aware query rewriting
-2. Predicate pushdown
-3. Join reordering  
-4. Subquery elimination
-5. Window function optimization
-6. Partitioning hints
-
-ПРАВИЛА:
-- Сохраняй логику запроса
-- Фокус на производительность
-- Добавляй комментарии к оптимизациям
-- Используй современные SQL функции
-
-Верни только оптимизированный SQL с комментариями.
-"""
-    
-    return call_giga_api_wrapper(f"Оптимизируй SQL: {sql}", optimization_system)
-
-def generate_index_recommendations(sql: str, table_stats: dict = None) -> list:
-    """Генерирует рекомендации по индексам для SQL"""
-    
-    index_system = """
-Ты — эксперт по SQL индексам. Проанализируй запрос и предложи оптимальные индексы.
-
-АНАЛИЗИРУЙ:
-- WHERE условия
-- JOIN ключи  
-- ORDER BY столбцы
-- GROUP BY поля
-- Частотность использования
-
-Ответь JSON списком рекомендаций:
-[
-    {
-        "table": "table_name",
-        "columns": ["col1", "col2"],
-        "type": "btree/hash/gin",
-        "reason": "объяснение",
-        "priority": "high/medium/low"
-    }
-]
-"""
-    
-    try:
-        response = call_giga_api_wrapper(f"SQL: {sql}", index_system)
-        return json.loads(response)
-    except:
-        return []
-
+            return sql_query_block.split("```sql")[1].split("```")[0]
+        except IndexError:
+            return sql_query_block
+    elif sql_query_block and sql_query_block.strip().upper().startswith("SELECT"):
+        return sql_query_block.strip()
+    return sql_query_block
 
 
 # ==============================================================================
