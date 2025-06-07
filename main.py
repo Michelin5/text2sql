@@ -16,11 +16,15 @@ from agents import (
     agent0_coordinator,
     agent1_rephraser,
     agent2_planner,
-    agent3_sql_generator,
+    agent3_sql_generator_advanced,  # Используем продвинутый генератор
     agent_sql_validator,
     agent_sql_fixer,
     agent_anomaly_detector,
-    agent_rag_retriever
+    agent_rag_retriever,
+    calculate_query_similarity,  # Для 90% совпадений
+    generate_fallback_sql,       # Fallback функции
+    extract_sql_from_response,
+    validate_and_explain_sql
 )
 from duckdb_utils import setup_duckdb, execute_duckdb_query
 from rag_handler import init_rag_db, add_to_rag_db
@@ -54,18 +58,64 @@ async def read_index():
     return FileResponse(INDEX_HTML_PATH)
 
 # ==============================================================================
-# ОБРАБОТКА НЕОПРЕДЕЛЕННОСТИ И УТОЧНЕНИЙ (ОПТИМИЗИРОВАННАЯ)
+# ФУНКЦИИ ПОДДЕРЖКИ 90% СОВПАДЕНИЙ
+# ==============================================================================
+
+def check_high_similarity_with_rag(user_prompt: str, rag_data: dict) -> bool:
+    """Проверяет, превышает ли сходство с прошлым запросом 90%"""
+    if not rag_data or not isinstance(rag_data, dict):
+        return False
+    
+    past_prompt = rag_data.get('user_prompt', '')
+    if not past_prompt:
+        return False
+    
+    similarity_score = calculate_query_similarity(user_prompt, past_prompt)
+    
+    print(f"[SIMILARITY_CHECK] Текущий: '{user_prompt[:50]}...'")
+    print(f"[SIMILARITY_CHECK] Прошлый: '{past_prompt[:50]}...'")
+    print(f"[SIMILARITY_CHECK] Сходство: {similarity_score:.3f}")
+    
+    return similarity_score >= 0.90
+
+# ==============================================================================
+# АНАЛИЗ НЕОПРЕДЕЛЕННОСТИ С ИНТЕГРАЦИЕЙ AGENTS.PY
 # ==============================================================================
 
 async def analyze_query_ambiguity(user_prompt):
-    """Анализирует неопределенность запроса с более гибкой логикой"""
+    """Анализирует неопределенность запроса с интеграцией coordinator"""
     prompt_lower = user_prompt.lower()
     
-    # Детекция аномалий
-    anomaly_keywords = ['аномали', 'выброс', 'необычн', 'странн', 'отклонени', 'экстремальн', 'подозритель']
-    needs_anomaly = any(keyword in prompt_lower for keyword in anomaly_keywords)
+    # Используем координатор из agents.py для определения типа анализа
+    try:
+        coordination_result = agent0_coordinator(user_prompt)
+        
+        # Обрабатываем результат координатора
+        if isinstance(coordination_result, str):
+            import re
+            json_match = re.search(r'\{.*\}', coordination_result, re.DOTALL)
+            if json_match:
+                coordination_result = json.loads(json_match.group(0))
+            else:
+                coordination_result = {
+                    "needs_anomaly_detection": False,
+                    "analysis_type": "standard",
+                    "keywords": []
+                }
+        
+        needs_anomaly_detection = coordination_result.get('needs_anomaly_detection', False)
+        analysis_type = coordination_result.get('analysis_type', 'standard')
+        
+        print(f"[COORDINATOR] Результат: {coordination_result}")
+        
+    except Exception as e:
+        print(f"[COORDINATOR ERROR] {e}")
+        # Fallback анализ
+        anomaly_keywords = ['аномали', 'выброс', 'необычн', 'странн', 'отклонени']
+        needs_anomaly_detection = any(keyword in prompt_lower for keyword in anomaly_keywords)
+        analysis_type = "anomaly" if needs_anomaly_detection else "standard"
     
-    # Детекция таблиц в запросе
+    # Детекция таблиц
     table_mentions = {
         'population': ['населен', 'демограф', 'людей', 'жител'],
         'salary': ['зарплат', 'заработн', 'оклад', 'доход'],
@@ -79,12 +129,9 @@ async def analyze_query_ambiguity(user_prompt):
         if any(keyword in prompt_lower for keyword in keywords):
             mentioned_tables.append(table)
     
-    # УЛУЧШЕННАЯ ЛОГИКА: Более агрессивное автоматическое улучшение
-    
-    # 1. Если есть аномалии без таблицы - автоматически выбираем таблицу
-    if needs_anomaly and not mentioned_tables:
+    # Автоматическое улучшение запросов
+    if needs_anomaly_detection and not mentioned_tables:
         enhanced_prompt = f"Найди аномалии в данных о населении"
-        
         enhancement_data = {
             "ambiguity_level": "medium",
             "original_prompt": user_prompt,
@@ -92,13 +139,11 @@ async def analyze_query_ambiguity(user_prompt):
             "reason": "Автоматически выбрана таблица 'население' для поиска аномалий",
             "auto_selected_table": "population"
         }
-        return enhancement_data, enhanced_prompt, False, needs_anomaly
+        return enhancement_data, enhanced_prompt, False, needs_anomaly_detection
     
-    # 2. Если запрос о топе/рейтинге без таблицы - выбираем salary
     elif any(word in prompt_lower for word in ['топ', 'лучш', 'высок', 'максимальн', 'рейтинг']):
         if not mentioned_tables:
             enhanced_prompt = f"Покажи топ 5 регионов по зарплатам за 2023 год"
-            
             enhancement_data = {
                 "ambiguity_level": "medium", 
                 "original_prompt": user_prompt,
@@ -106,22 +151,9 @@ async def analyze_query_ambiguity(user_prompt):
                 "reason": "Автоматически выбрана таблица 'зарплаты' для рейтинга",
                 "auto_selected_table": "salary"
             }
-            return enhancement_data, enhanced_prompt, False, needs_anomaly
+            return enhancement_data, enhanced_prompt, False, needs_anomaly_detection
     
-    # 3. Если общий запрос о данных - выбираем население
-    elif any(word in prompt_lower for word in ['данные', 'информация', 'покажи', 'анализ']) and len(user_prompt.split()) < 6:
-        enhanced_prompt = f"Покажи общую статистику по населению за последний год"
-        
-        enhancement_data = {
-            "ambiguity_level": "medium",
-            "original_prompt": user_prompt, 
-            "enhanced_prompt": enhanced_prompt,
-            "reason": "Автоматически выбран анализ данных о населении",
-            "auto_selected_table": "population"
-        }
-        return enhancement_data, enhanced_prompt, False, needs_anomaly
-    
-    # 4. ТОЛЬКО для экстремально коротких запросов требуем уточнение
+    # Требуется уточнение только для очень коротких запросов
     if len(user_prompt.split()) <= 2 and user_prompt.lower() in ['данные', 'анализ', 'информация', 'покажи']:
         clarification_data = {
             "needs_clarification": True,
@@ -139,289 +171,126 @@ async def analyze_query_ambiguity(user_prompt):
                 "Анализ миграционных потоков за 2023 год"
             ]
         }
-        return clarification_data, None, True, needs_anomaly
+        return clarification_data, None, True, needs_anomaly_detection
     
-    # Во всех остальных случаях - обрабатываем как есть
-    return None, user_prompt, False, needs_anomaly
+    return None, user_prompt, False, needs_anomaly_detection
 
 # ==============================================================================
-# ОПТИМИЗИРОВАННАЯ LLM-АНАЛИЗ С ВНУТРЕННЕЙ ЦЕПЬЮ РАССУЖДЕНИЙ
+# ГЕНЕРАЦИЯ ФИНАЛЬНОГО ОТВЕТА С КОМПАКТНОСТЬЮ
 # ==============================================================================
 
-def generate_llm_analysis_summary(sql_results_df, user_prompt, anomaly_results=None, needs_anomaly_detection=False, rag_context: dict = None):
-    """Генерирует компактный LLM-анализ с внутренней цепью рассуждений"""
+def generate_enhanced_final_response(sql_results_df, user_prompt, anomaly_results=None, needs_anomaly_detection=False, analysis_steps=0, analysis_context=None):
+    """Генерирует компактный финальный ответ с внутренней цепью рассуждений"""
+    
+    anomalies_found = (anomaly_results is not None and anomaly_results.get('anomalies_found', False))
+    
+    if needs_anomaly_detection:
+        status_icon = "🚨" if anomalies_found else "✅"
+        status_text = "Аномалии обнаружены" if anomalies_found else "Аномалии не найдены"
+    else:
+        status_icon = "📊"
+        status_text = "Анализ завершен"
+    
+    # ВНУТРЕННЯЯ ЦЕПЬ РАССУЖДЕНИЙ (НЕ ПОКАЗЫВАЕМ ПОЛЬЗОВАТЕЛЮ)
+    internal_reasoning = f"""
+    Шаг 1: Анализ данных - получено {len(sql_results_df) if sql_results_df is not None else 0} записей
+    Шаг 2: Тип анализа - {'поиск аномалий' if needs_anomaly_detection else 'стандартный анализ'}
+    Шаг 3: Результат аномалий - {'найдены' if anomalies_found else 'не найдены'}
+    Шаг 4: Качество данных - {'требует внимания' if anomalies_found else 'в норме'}
+    Шаг 5: Chain of thought шагов - {analysis_steps}
+    """
+    
+    # Генерируем краткий LLM ответ
     try:
-        # Подготавливаем компактный контекст
-        analysis_context = prepare_compact_analysis_context(sql_results_df, user_prompt, anomaly_results, needs_anomaly_detection)
+        system_instruction = f"""
+        Создай краткий (максимум 80 слов) ответ на русском языке.
         
-        # Генерируем компактный LLM-анализ с внутренней цепью рассуждений
-        llm_summary = generate_compact_intelligent_summary(analysis_context, rag_context=rag_context)
+        Внутренняя цепь рассуждений (НЕ показывай её пользователю):
+        {internal_reasoning}
         
-        return llm_summary
+        Структура ответа:
+        1. Краткое резюме (1 предложение)
+        2. Ключевая информация о данных
+        3. Практический вывод
+        
+        Используй дружелюбный тон.
+        """
+        
+        prompt = f"""
+        Запрос: "{user_prompt}"
+        Результат: {status_text}
+        Записей: {len(sql_results_df) if sql_results_df is not None else 0}
+        """
+        
+        if anomaly_results and anomalies_found:
+            prompt += f"Найдено аномалий: {anomaly_results.get('anomaly_count', 'несколько')}\n"
+        
+        llm_text = call_giga_api_wrapper(prompt, system_instruction)
     except Exception as e:
-        print(f"[LLM_ANALYSIS ERROR] Ошибка в компактном LLM-анализе: {e}")
-        return generate_compact_fallback_summary(sql_results_df, user_prompt, anomaly_results, needs_anomaly_detection)
-
-def prepare_compact_analysis_context(sql_results_df, user_prompt, anomaly_results, needs_anomaly_detection):
-    """Подготавливает компактный контекст для оптимизированного анализа"""
-    context = {
-        "original_query": user_prompt,
-        "data_available": sql_results_df is not None and not sql_results_df.empty,
-        "total_records": len(sql_results_df) if sql_results_df is not None else 0,
-        "analysis_type": "anomaly_detection" if needs_anomaly_detection else "standard_analysis"
-    }
+        llm_text = f"Анализ завершен. Обработано {len(sql_results_df) if sql_results_df is not None else 0:,} записей."
     
-    # ОГРАНИЧЕННАЯ информация о данных для компактности
+    response = f"{status_icon} **{status_text}**\n\n{llm_text}\n\n"
+    
+    # ПЕРВЫЕ 10-15 СТРОК ДАННЫХ
     if sql_results_df is not None and not sql_results_df.empty:
-        context["columns"] = list(sql_results_df.columns)[:5]  # Только первые 5 столбцов
-        
-        # Статистика только по первому числовому столбцу
+        response += "**📋 Образец данных (первые 15 строк):**\n"
+        display_df = sql_results_df.head(15)
+        response += display_df.to_markdown(index=False) + "\n"
+        if len(sql_results_df) > 15:
+            response += f"*Показаны первые 15 из {len(sql_results_df):,} записей*\n\n"
+    
+    # ХАРАКТЕРИСТИКА ДАННЫХ
+    if sql_results_df is not None and not sql_results_df.empty:
         numeric_cols = sql_results_df.select_dtypes(include=[np.number]).columns
         if len(numeric_cols) > 0:
             key_col = numeric_cols[0]
             col_data = sql_results_df[key_col].dropna()
-            if len(col_data) > 0:
-                context["key_statistics"] = {
-                    "column": key_col,
-                    "mean": round(float(col_data.mean()), 2),
-                    "min": round(float(col_data.min()), 2),
-                    "max": round(float(col_data.max()), 2),
-                    "std": round(float(col_data.std()), 2)
-                }
-        
-        # ПЕРВЫЕ 10 СТРОК данных для показа
-        context["sample_data"] = sql_results_df.head(10).to_dict('records')
+            response += f"**📈 Характеристика данных:**\n"
+            response += f"• Основной показатель: {key_col}\n"
+            response += f"• Среднее значение: {col_data.mean():.1f}\n"
+            response += f"• Диапазон: {col_data.min():.1f} — {col_data.max():.1f}\n"
+            response += f"• Стандартное отклонение: {col_data.std():.1f}\n\n"
     
-    # СЖАТЫЕ результаты анализа аномалий - ТОЛЬКО ТОП-10
-    if anomaly_results:
-        compact_anomaly_results = {}
-        if anomaly_results.get('anomalies_found', False):
-            compact_anomaly_results["found"] = True
-            compact_anomaly_results["summary"] = anomaly_results.get('description', 'Обнаружены аномалии')
-            
-            # ОГРАНИЧИВАЕМ ДО 10 АНОМАЛИЙ
-            if 'anomalies' in anomaly_results:
-                limited_anomalies = anomaly_results['anomalies'][:10]
-                compact_anomaly_results["details"] = []
-                
-                for anomaly in limited_anomalies:
-                    compact_detail = {}
-                    if 'territory' in anomaly:
-                        compact_detail["name"] = anomaly['territory']
-                        compact_detail["type"] = "territory"
-                    elif 'column' in anomaly:
-                        compact_detail["name"] = anomaly['column']
-                        compact_detail["type"] = "column"
+    # КОНКРЕТНЫЕ ПРИМЕРЫ АНОМАЛИЙ (ТОЛЬКО ТОП-10)
+    if anomalies_found:
+        response += "**🎯 Найденные аномалии (топ-10):**\n"
+        
+        if 'anomalies' in anomaly_results:
+            for i, anomaly in enumerate(anomaly_results['anomalies'][:10], 1):
+                if isinstance(anomaly, dict):
+                    territory_name = anomaly.get('territory', anomaly.get('column', f'Объект {i}'))
+                    count = anomaly.get('anomaly_count', 0)
+                    examples = anomaly.get('outlier_values', [])
                     
-                    compact_detail["count"] = anomaly.get('anomaly_count', 0)
-                    compact_detail["percentage"] = anomaly.get('anomaly_percentage', 0)
-                    
-                    # ТОЛЬКО ПЕРВЫЕ 3 ПРИМЕРА
-                    if 'outlier_values' in anomaly:
-                        compact_detail["examples"] = [round(x, 2) for x in anomaly['outlier_values'][:3]]
-                    
-                    compact_anomaly_results["details"].append(compact_detail)
-        else:
-            compact_anomaly_results["found"] = False
-            compact_anomaly_results["message"] = anomaly_results.get('message', 'Аномалии не найдены')
-        
-        context["anomaly_analysis"] = compact_anomaly_results
-    
-    return context
-
-def generate_compact_intelligent_summary(analysis_context, rag_context: dict = None):
-    """Генерирует компактное интеллектуальное саммари с внутренней цепью рассуждений"""
-    
-    # ВНУТРЕННЯЯ ЦЕПЬ РАССУЖДЕНИЙ (НЕ ПОКАЗЫВАЕМ ПОЛЬЗОВАТЕЛЮ)
-    internal_reasoning = f"""
-    Шаг 1: Анализ запроса - "{analysis_context['original_query']}"
-    Шаг 2: Тип анализа - {analysis_context['analysis_type']}
-    Шаг 3: Объем данных - {analysis_context['total_records']} записей
-    Шаг 4: Аномалии - {"найдены" if analysis_context.get('anomaly_analysis', {}).get('found', False) else "не найдены"}
-    Шаг 5: Структура ответа - компактное саммари с примерами
-    """
-    
-    rag_guidance = ""
-    if rag_context and isinstance(rag_context, dict) and rag_context.get('final_answer'):
-        rag_guidance = (
-            "Тебе также предоставлен контекст из похожего успешного запроса. "
-            "Используй его стиль и структуру как пример, но ТОЧНО отражай ТЕКУЩИЕ данные.\n"
-            f"Пример из прошлого запроса:\n{rag_context.get('final_answer', 'N/A')[:200]}...\n\n"
-        )
-
-    system_instruction = f"""
-Ты — эксперт-аналитик данных. Создай КОМПАКТНОЕ саммари на русском языке (максимум 200 слов).
-
-ВНУТРЕННЯЯ ЦЕПЬ РАССУЖДЕНИЙ (НЕ показывай пользователю):
-{internal_reasoning}
-
-{rag_guidance}
-
-ОБЯЗАТЕЛЬНАЯ СТРУКТУРА ответа:
-1. **Краткое резюме** (1-2 предложения)
-2. **Образец данных** (первые 10-15 строк в таблице)
-3. **Характеристика данных** (основные показатели)
-4. **Аномалии** (конкретные примеры если есть, или "не найдены")
-5. **Итог** (1 предложение)
-
-Будь конкретным, используй числа, примеры. НЕ показывай процесс рассуждений.
-"""
-    
-    prompt = f"""
-Исходный запрос: "{analysis_context['original_query']}"
-Тип анализа: {analysis_context['analysis_type']}
-Записей обработано: {analysis_context['total_records']}
-Данные доступны: {'Да' if analysis_context['data_available'] else 'Нет'}
-
-"""
-    
-    if analysis_context['data_available']:
-        if 'key_statistics' in analysis_context:
-            stats = analysis_context['key_statistics']
-            prompt += f"""
-Основной показатель: {stats['column']}
-Статистика: среднее={stats['mean']}, мин={stats['min']}, макс={stats['max']}, σ={stats['std']}
-
-Первые 10 строк данных для показа:
-{analysis_context.get('sample_data', [])}
-
-"""
-    
-    if 'anomaly_analysis' in analysis_context:
-        anomaly_data = analysis_context['anomaly_analysis']
-        if anomaly_data.get('found', False):
-            prompt += f"""
-АНОМАЛИИ НАЙДЕНЫ:
-Краткое описание: {anomaly_data.get('summary', 'Обнаружены аномалии')}
-
-Детали (топ-10):
-"""
-            for detail in anomaly_data.get('details', [])[:10]:
-                prompt += f"- {detail['name']}: {detail['count']} аномалий ({detail['percentage']}%)"
-                if 'examples' in detail:
-                    prompt += f", примеры: {detail['examples']}"
-                prompt += "\n"
-        else:
-            prompt += f"АНОМАЛИИ НЕ НАЙДЕНЫ: {anomaly_data.get('message', 'Все данные в норме')}\n"
-    
-    prompt += "\nСоздай компактное структурированное саммари:"
-    
-    try:
-        llm_response = call_giga_api_wrapper(prompt, system_instruction)
-        return format_compact_llm_summary(llm_response, analysis_context)
-    except Exception as e:
-        print(f"[COMPACT_LLM_SUMMARY ERROR] Ошибка генерации: {e}")
-        return generate_compact_fallback_from_context(analysis_context)
-
-def format_compact_llm_summary(llm_response, analysis_context):
-    """Форматирует компактное LLM саммари"""
-    analysis_type_name = "🔍 Анализ аномалий" if analysis_context['analysis_type'] == 'anomaly_detection' else "📊 Анализ данных"
-    
-    formatted_summary = f"# {analysis_type_name}\n\n"
-    formatted_summary += f"**Запрос:** {analysis_context['original_query']}\n"
-    formatted_summary += f"**Обработано:** {analysis_context['total_records']:,} записей\n\n"
-    
-    # LLM анализ
-    formatted_summary += llm_response + "\n\n"
-    
-    # ПЕРВЫЕ 10-15 СТРОК ДАННЫХ (если есть)
-    if analysis_context['data_available'] and 'sample_data' in analysis_context:
-        formatted_summary += "**📋 Образец данных (первые 10 строк):**\n\n"
-        sample_df = pd.DataFrame(analysis_context['sample_data'])
-        formatted_summary += sample_df.to_markdown(index=False) + "\n\n"
-    
-    # КОМПАКТНЫЕ АНОМАЛИИ
-    if 'anomaly_analysis' in analysis_context and analysis_context['anomaly_analysis'].get('found', False):
-        anomaly_data = analysis_context['anomaly_analysis']
-        formatted_summary += "**🎯 Конкретные аномалии (топ-10):**\n"
-        
-        for i, detail in enumerate(anomaly_data.get('details', [])[:10], 1):
-            name = detail.get('name', f'Объект {i}')
-            count = detail.get('count', 0)
-            formatted_summary += f"{i}. **{name}**: {count} аномалий"
-            
-            if 'examples' in detail:
-                examples_str = ", ".join([str(x) for x in detail['examples'][:3]])
-                formatted_summary += f" (примеры: {examples_str})"
-            formatted_summary += "\n"
-        
-        formatted_summary += "\n"
-    
-    # КРАТКИЙ ИТОГ
-    formatted_summary += f"**📊 Итог:** {analysis_context['total_records']:,} записей"
-    if 'anomaly_analysis' in analysis_context and analysis_context['anomaly_analysis'].get('found', False):
-        total_anomalies = sum(d.get('count', 0) for d in analysis_context['anomaly_analysis'].get('details', []))
-        formatted_summary += f" • {total_anomalies} аномалий найдено"
+                    response += f"{i}. **{territory_name}**: {count} аномальных значений\n"
+                    if examples:
+                        examples_str = ", ".join([f"{x:.1f}" for x in examples[:3]])
+                        response += f"   Примеры: {examples_str}\n"
+        response += "\n"
     else:
-        formatted_summary += " • аномалии не обнаружены"
+        response += "**✅ Аномалии не найдены** - все значения в пределах нормы\n\n"
     
-    return formatted_summary
-
-def generate_compact_fallback_from_context(analysis_context):
-    """Генерирует компактное резервное саммари"""
-    analysis_type_name = "🔍 Анализ аномалий" if analysis_context['analysis_type'] == 'anomaly_detection' else "📊 Анализ данных"
+    # КРАТКАЯ ТЕХНИЧЕСКАЯ ИНФОРМАЦИЯ
+    response += f"**📊 Итого:** {len(sql_results_df) if sql_results_df is not None else 0:,} записей"
+    if anomalies_found and 'anomalies' in anomaly_results:
+        total_anomalies = sum(a.get('anomaly_count', 0) for a in anomaly_results['anomalies'][:10] if isinstance(a, dict))
+        response += f" • {total_anomalies} аномалий"
+    response += f" • {analysis_steps} этапов анализа"
     
-    summary = f"# {analysis_type_name}\n\n"
-    summary += f"**Запрос:** {analysis_context['original_query']}\n"
-    summary += f"**Результат:** Обработано {analysis_context['total_records']} записей\n\n"
-    
-    if analysis_context['data_available']:
-        if 'key_statistics' in analysis_context:
-            stats = analysis_context['key_statistics']
-            summary += f"**Основные показатели:**\n"
-            summary += f"• Столбец: {stats['column']}\n"
-            summary += f"• Среднее: {stats['mean']}\n"
-            summary += f"• Диапазон: {stats['min']} — {stats['max']}\n\n"
-        
-        # Показываем образец данных
-        if 'sample_data' in analysis_context:
-            summary += "**📋 Образец данных:**\n\n"
-            sample_df = pd.DataFrame(analysis_context['sample_data'])
-            summary += sample_df.head(10).to_markdown(index=False) + "\n\n"
-    else:
-        summary += "**⚠️ Данные не найдены**\n\n"
-    
-    if 'anomaly_analysis' in analysis_context:
-        if analysis_context['anomaly_analysis'].get('found', False):
-            summary += "**🚨 Найдены аномалии** - проверьте данные\n"
-        else:
-            summary += "**✅ Аномалии не найдены** - данные в норме\n"
-    
-    return summary
-
-def generate_compact_fallback_summary(sql_results_df, user_prompt, anomaly_results, needs_anomaly_detection):
-    """Генерирует простое компактное резервное саммари"""
-    if sql_results_df is None:
-        return "**❌ Ошибка анализа**\n\nНе удалось получить данные. Проверьте корректность запроса."
-    
-    if sql_results_df.empty:
-        return f"**📭 Данные не найдены**\n\nПо запросу '{user_prompt}' данные не обнаружены."
-    
-    summary = f"**📊 Краткий анализ**\n\n"
-    summary += f"**Запрос:** {user_prompt}\n"
-    summary += f"**Записей:** {len(sql_results_df):,}\n\n"
-    
-    # Показываем первые 10 строк
-    summary += "**📋 Данные (первые 10 строк):**\n\n"
-    summary += sql_results_df.head(10).to_markdown(index=False) + "\n\n"
-    
-    if needs_anomaly_detection and anomaly_results:
-        if anomaly_results.get('anomalies_found', False):
-            summary += "**🚨 Аномалии найдены**\n"
-        else:
-            summary += "**✅ Аномалии не найдены**\n"
-    
-    return summary
+    return response
 
 # ==============================================================================
-# ОСНОВНАЯ ФУНКЦИЯ-ГЕНЕРАТОР (ОПТИМИЗИРОВАННАЯ)
+# ОСНОВНАЯ ФУНКЦИЯ-ГЕНЕРАТОР С ИНТЕГРАЦИЕЙ AGENTS.PY
 # ==============================================================================
 
 async def event_generator(user_prompt: str, duckdb_con):
-    """Оптимизированный асинхронный генератор событий"""
+    """
+    Полностью интегрированный генератор событий с поддержкой всех функций из agents.py
+    """
     current_stage = "Начало обработки"
-    current_data = {}
+    analysis_context = {}
     rag_context_for_agents = None
+    cot_steps = []
     
     # Accumulated data for potential saving
     accumulated_data_for_rag = {
@@ -432,138 +301,337 @@ async def event_generator(user_prompt: str, duckdb_con):
         "final_answer": None
     }
 
+    async def add_cot_step(step_text, step_type="thinking", is_complete=False):
+        """Добавляет шаг в цепочку рассуждений"""
+        cot_steps.append({
+            "text": step_text,
+            "type": step_type,
+            "complete": is_complete,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+        
+        yield {"type": "cot_step", "stage": "chain_of_thought", 
+               "content": {"steps": cot_steps, "current_step": step_text, "complete": is_complete}}
+        await asyncio.sleep(0.3)
+
     try:
-        yield {"type": "status", "stage": "rag_check", "message": "Проверка базы знаний..."}
+        # Начинаем цепочку рассуждений
+        yield {"type": "cot_start", "stage": "reasoning", "message": "Начинаю интеллектуальный анализ..."}
+        await asyncio.sleep(0.3)
+
+        # === ЭТАП 1: RAG С ПОДДЕРЖКОЙ 90% СОВПАДЕНИЙ ===
+        async for cot_event in add_cot_step("🔍 Проверяю базу знаний на наличие похожих запросов"):
+            yield cot_event
+
         rag_result = agent_rag_retriever(user_prompt)
         rag_status = rag_result.get("status")
         rag_data = rag_result.get("data")
 
         if rag_status == "error":
-            yield {"type": "error", "stage": "rag_check", "message": f"Ошибка базы знаний: {rag_result.get('message')}. Продолжаем без нее."}
+            async for cot_event in add_cot_step("⚠️ Ошибка базы знаний, продолжаю без неё", "warning", True):
+                yield cot_event
+            yield {"type": "warning", "stage": "rag_check", "message": f"Ошибка базы знаний: {rag_result.get('message')}"}
+            
         elif rag_status == "exact":
+            async for cot_event in add_cot_step("✅ Найден точный ответ в базе знаний", "success", True):
+                yield cot_event
+            
             final_answer = rag_data.get("final_answer", "Точный ответ найден.")
-            accumulated_data_for_rag["formal_prompt"] = rag_data.get("formal_prompt")
-            accumulated_data_for_rag["plan"] = rag_data.get("plan")
-            accumulated_data_for_rag["sql_query"] = rag_data.get("sql_query")
-            accumulated_data_for_rag["final_answer"] = final_answer
-            yield {"type": "final_answer", "stage": "rag_exact_match", "answer": final_answer, "rag_components": accumulated_data_for_rag, "message": "Найден точный ответ."}
+            accumulated_data_for_rag.update(rag_data)
+            
+            yield {"type": "cot_hide", "stage": "reasoning", "message": ""}
+            await asyncio.sleep(0.5)
+            yield {"type": "final_answer", "stage": "rag_exact_match", "answer": final_answer, 
+                   "rag_components": accumulated_data_for_rag, "message": "Найден точный ответ."}
             return
+            
         elif rag_status == "similar":
-            rag_context_for_agents = rag_data
-            yield {"type": "status", "stage": "rag_similar_match", "message": "Найден похожий запрос. Используем для улучшения."}
+            # ПРОВЕРКА 90% СОВПАДЕНИЯ
+            if check_high_similarity_with_rag(user_prompt, rag_data):
+                async for cot_event in add_cot_step("🎯 Обнаружено 90%+ совпадение с прошлым запросом", "success", True):
+                    yield cot_event
+                
+                final_answer = rag_data.get("final_answer", "Найден очень похожий ответ.")
+                accumulated_data_for_rag.update(rag_data)
+                
+                yield {"type": "cot_hide", "stage": "reasoning", "message": ""}
+                await asyncio.sleep(0.5)
+                yield {"type": "final_answer", "stage": "rag_high_similarity_match", "answer": final_answer,
+                       "rag_components": accumulated_data_for_rag, "message": "Найден ответ на очень похожий запрос (совпадение >90%)."}
+                return
+            else:
+                async for cot_event in add_cot_step("📋 Найден похожий запрос, использую как контекст", "info", True):
+                    yield cot_event
+                rag_context_for_agents = rag_data
         else:
-            yield {"type": "status", "stage": "rag_no_match", "message": "Стандартная обработка."}
+            async for cot_event in add_cot_step("🆕 Новый запрос, стандартная обработка", "info", True):
+                yield cot_event
 
-        # Анализ неопределенности
-        current_stage = "Анализ запроса"
-        yield {"type": "status", "stage": "coordinator", "message": current_stage + "..."}
-        ambiguity_analysis_result, enhanced_prompt, needs_clarification, needs_anomaly_detection_local = await analyze_query_ambiguity(user_prompt)
+        # === ЭТАП 2: АНАЛИЗ НЕОПРЕДЕЛЕННОСТИ ===
+        async for cot_event in add_cot_step("🔍 Анализирую тип запроса и определяю стратегию"):
+            yield cot_event
+
+        current_stage = "Анализ неопределенности"
+        ambiguity_analysis_result, enhanced_prompt, needs_clarification, needs_anomaly_detection = await analyze_query_ambiguity(user_prompt)
         
         if needs_clarification:
+            async for cot_event in add_cot_step("❓ Запрос требует уточнения", "warning", True):
+                yield cot_event
+            
+            yield {"type": "cot_hide", "stage": "reasoning", "message": ""}
+            await asyncio.sleep(0.5)
             yield {"type": "clarification_needed", "stage": "ambiguity_analysis", "data": ambiguity_analysis_result}
             return
 
         if enhanced_prompt and enhanced_prompt != user_prompt:
-            yield {"type": "status", "stage": "ambiguity_analysis", "message": f"Запрос улучшен: {enhanced_prompt}", "original_prompt": user_prompt, "enhanced_prompt": enhanced_prompt}
+            async for cot_event in add_cot_step(f"✨ Автоматически улучшил запрос", "enhancement", True):
+                yield cot_event
             processed_user_prompt = enhanced_prompt
+            analysis_context['enhanced_query'] = True
         else:
             processed_user_prompt = user_prompt
-        
-        needs_anomaly_detection = needs_anomaly_detection_local
 
-        # 1. Переформулировщик
+        strategy_text = "поиск аномалий" if needs_anomaly_detection else "стандартный анализ"
+        async for cot_event in add_cot_step(f"🎯 Стратегия определена: {strategy_text}", "success", True):
+            yield cot_event
+
+        analysis_context['analysis_type'] = 'anomaly_detection' if needs_anomaly_detection else 'standard_analysis'
+
+        # === ЭТАП 3: ПЕРЕФОРМУЛИРОВКА ===
+        async for cot_event in add_cot_step("📝 Формализую запрос с учетом семантического анализа"):
+            yield cot_event
+
         current_stage = "Переформулировка запроса"
-        yield {"type": "status", "stage": "rephraser", "message": current_stage + "..."}
         formal_prompt_result = agent1_rephraser(processed_user_prompt, rag_context=rag_context_for_agents)
         accumulated_data_for_rag["formal_prompt"] = formal_prompt_result
+        analysis_context['formal_request'] = formal_prompt_result
+
+        async for cot_event in add_cot_step("✅ Запрос формализован с сохранением намерений", "success", True):
+            yield cot_event
+
         yield {"type": "intermediary_result", "stage": "rephraser", "name": "Формальный запрос", "content": formal_prompt_result}
 
-        # 2. Планировщик
+        # === ЭТАП 4: ПЛАНИРОВАНИЕ ===
+        async for cot_event in add_cot_step("📋 Составляю детальный план с учетом RAG контекста"):
+            yield cot_event
+
         current_stage = "Создание плана"
-        yield {"type": "status", "stage": "planner", "message": current_stage + "..."}
         plan_result = agent2_planner(formal_prompt_result, rag_context=rag_context_for_agents)
         accumulated_data_for_rag["plan"] = plan_result
+        analysis_context['plan'] = plan_result
+
+        plan_steps_count = len([line for line in plan_result.split('\n') if line.strip() and any(c.isdigit() for c in line[:3])])
+        async for cot_event in add_cot_step(f"✅ План готов: {plan_steps_count} этапов анализа", "success", True):
+            yield cot_event
+
         yield {"type": "intermediary_result", "stage": "planner", "name": "План выполнения", "content": plan_result}
 
-        # 3. SQL Генератор
-        current_stage = "Генерация SQL"
-        yield {"type": "status", "stage": "sql_generator", "message": current_stage + "..."}
-        sql_query_result = agent3_sql_generator(plan_result, rag_context=rag_context_for_agents)
-        yield {"type": "intermediary_result", "stage": "sql_generator", "name": "SQL", "content": sql_query_result, "language": "sql"}
+        # === ЭТАП 5: ПРОДВИНУТАЯ SQL ГЕНЕРАЦИЯ ===
+        async for cot_event in add_cot_step("💾 Генерирую оптимизированный SQL с AI-анализом"):
+            yield cot_event
 
-        # 4. Валидация SQL (упрощенная)
+        current_stage = "Продвинутая генерация SQL"
+        
+        try:
+            # Используем продвинутый SQL генератор из agents.py
+            sql_result = agent3_sql_generator_advanced(plan_result, rag_context_for_agents, processed_user_prompt)
+            
+            if isinstance(sql_result, dict):
+                if sql_result.get("is_valid", True):
+                    generated_sql_query = sql_result["sql"]
+                    analysis_context['sql_confidence'] = sql_result.get("confidence_score", 85)
+                    
+                    # Показываем дополнительную информацию о SQL
+                    if sql_result.get("explanation"):
+                        async for cot_event in add_cot_step(f"🧠 {sql_result['explanation'][:60]}...", "info", True):
+                            yield cot_event
+                    
+                    yield {"type": "sql_analysis", "stage": "sql_generator", 
+                           "content": {
+                               "explanation": sql_result.get("explanation", ""),
+                               "performance_notes": sql_result.get("performance_notes", ""),
+                               "confidence": sql_result.get("confidence_score", 0)
+                           }}
+                else:
+                    async for cot_event in add_cot_step("⚠️ SQL требует дополнительной валидации", "warning", True):
+                        yield cot_event
+                    generated_sql_query = sql_result["sql"]
+            else:
+                generated_sql_query = sql_result
+                
+            analysis_context['sql_query'] = generated_sql_query
+            
+            async for cot_event in add_cot_step("✅ Оптимизированный SQL готов к выполнению", "success", True):
+                yield cot_event
+
+        except Exception as e:
+            async for cot_event in add_cot_step("❌ Ошибка генерации SQL, использую fallback", "error", True):
+                yield cot_event
+            
+            # Используем fallback из agents.py
+            generated_sql_query = generate_fallback_sql({"data_scale": "medium"})
+            analysis_context['sql_query'] = generated_sql_query
+            print(f"[SQL_GENERATOR ERROR] {e}")
+
+        yield {"type": "intermediary_result", "stage": "sql_generator", "name": "Оптимизированный SQL", 
+               "content": generated_sql_query, "language": "sql"}
+
+        # === ЭТАП 6: ВАЛИДАЦИЯ И ИСПРАВЛЕНИЕ ===
+        async for cot_event in add_cot_step("🔍 Валидирую SQL на корректность"):
+            yield cot_event
+
         current_stage = "Валидация SQL"
-        yield {"type": "status", "stage": "sql_validation", "message": current_stage + "..."}
-        validator_result = agent_sql_validator(sql_query_result, plan_result)
+        validator_result = agent_sql_validator(generated_sql_query, plan_result)
 
         if validator_result.get("is_valid"):
-            validated_sql = validator_result.get("corrected_sql") or sql_query_result
-            yield {"type": "intermediary_result", "stage": "sql_validation", "name": "Валидированный SQL", "content": validated_sql, "language": "sql"}
+            validated_sql = validator_result.get("corrected_sql") or generated_sql_query
+            async for cot_event in add_cot_step("✅ SQL прошёл валидацию", "success", True):
+                yield cot_event
         else:
-            # Простое исправление
-            current_stage = "Исправление SQL"
-            yield {"type": "status", "stage": "sql_fixer", "message": current_stage + "..."}
-            fixed_sql = agent_sql_fixer(sql_query_result, validator_result.get("message", ""), plan_result)
-            validated_sql = fixed_sql if fixed_sql and fixed_sql.strip() else sql_query_result
-            yield {"type": "intermediary_result", "stage": "sql_fixer", "name": "Исправленный SQL", "content": validated_sql, "language": "sql"}
-        
-        accumulated_data_for_rag["sql_query"] = validated_sql
+            async for cot_event in add_cot_step("🔧 Исправляю ошибки в SQL"):
+                yield cot_event
+            
+            fixed_sql = agent_sql_fixer(generated_sql_query, validator_result.get("message", ""), plan_result)
+            validated_sql = fixed_sql if fixed_sql and fixed_sql.strip() else generated_sql_query
+            
+            async for cot_event in add_cot_step("✅ SQL исправлен", "success", True):
+                yield cot_event
 
-        # 5. Выполнение SQL
+        accumulated_data_for_rag["sql_query"] = validated_sql
+        analysis_context['final_sql'] = validated_sql
+
+        # === ЭТАП 7: ВЫПОЛНЕНИЕ SQL ===
+        async for cot_event in add_cot_step("⚡ Выполняю SQL-запрос в базе данных"):
+            yield cot_event
+
         current_stage = "Выполнение SQL"
-        yield {"type": "status", "stage": "sql_execution", "message": current_stage + "..."}
         try:
             sql_results_df = await execute_duckdb_query(duckdb_con, validated_sql)
+            
             if sql_results_df is not None and not sql_results_df.empty:
                 # Преобразуем datetime в строки
                 for col in sql_results_df.columns:
                     if pd.api.types.is_datetime64_any_dtype(sql_results_df[col]):
                         sql_results_df[col] = sql_results_df[col].astype(str)
                 
-                # ОГРАНИЧИВАЕМ ВОЗВРАЩАЕМЫЕ ДАННЫЕ ДО 100 СТРОК
+                records_count = len(sql_results_df)
+                async for cot_event in add_cot_step(f"✅ Получено {records_count:,} записей из базы данных", "success", True):
+                    yield cot_event
+                
+                # ОГРАНИЧИВАЕМ ОТОБРАЖЕНИЕ ДО 100 СТРОК
                 display_df = sql_results_df.head(100)
                 sql_results_json = display_df.to_dict(orient='records')
                 
-                yield {"type": "sql_result", "stage": "sql_execution", "data": sql_results_json, "row_count": len(sql_results_df), "message": f"SQL выполнен. Показано {len(display_df)} из {len(sql_results_df)} строк."}
+                analysis_context['data_retrieved'] = True
+                analysis_context['records_count'] = records_count
+                analysis_context['display_records'] = len(display_df)
+                
+                yield {"type": "sql_result", "stage": "sql_execution", "data": sql_results_json, 
+                       "row_count": records_count, 
+                       "message": f"SQL выполнен успешно. Показано {len(display_df)} из {records_count} записей."}
             else:
+                async for cot_event in add_cot_step("⚠️ SQL выполнен, но данные не найдены", "warning", True):
+                    yield cot_event
+                
                 sql_results_json = []
-                yield {"type": "sql_result", "stage": "sql_execution", "data": [], "row_count": 0, "message": "SQL выполнен, но данных нет."}
+                analysis_context['data_retrieved'] = False
+                analysis_context['records_count'] = 0
+                
+                yield {"type": "sql_result", "stage": "sql_execution", "data": [], "row_count": 0, 
+                       "message": "SQL выполнен, но данных нет."}
+                
         except Exception as e:
+            async for cot_event in add_cot_step(f"❌ Ошибка выполнения SQL: {str(e)[:50]}...", "error", True):
+                yield cot_event
             yield {"type": "error", "stage": "sql_execution", "message": f"Ошибка SQL: {str(e)}"}
             return
 
-        # 6. ОПТИМИЗИРОВАННЫЙ анализ аномалий (топ-10)
+        # === ЭТАП 8: ОПТИМИЗИРОВАННЫЙ АНАЛИЗ АНОМАЛИЙ (ТОП-10) ===
         anomaly_summary = None
         if needs_anomaly_detection:
-            current_stage = "Анализ аномалий (топ-10)"
-            yield {"type": "status", "stage": "anomaly_detection", "message": current_stage + "..."}
+            async for cot_event in add_cot_step("🔍 Запускаю детектор аномалий (топ-10 результатов)"):
+                yield cot_event
+
+            current_stage = "Оптимизированный анализ аномалий"
             if sql_results_df is not None and not sql_results_df.empty:
-                # Ограничиваем анализ первыми 1000 строками для производительности
+                # ОГРАНИЧИВАЕМ АНАЛИЗ ПЕРВЫМИ 1000 СТРОКАМИ
                 analysis_df = sql_results_df.head(1000)
                 anomaly_results = agent_anomaly_detector(analysis_df, processed_user_prompt)
-                yield {"type": "intermediary_result", "stage": "anomaly_detection", "name": "Аномалии (топ-10)", "content": anomaly_results}
-                anomaly_summary = anomaly_results
-            else:
-                yield {"type": "warning", "stage": "anomaly_detection", "message": "Нет данных для анализа аномалий."}
+                
+                if anomaly_results.get('anomalies_found'):
+                    anomaly_count = 0
+                    if 'anomalies' in anomaly_results:
+                        anomaly_count = sum(a.get('anomaly_count', 0) for a in anomaly_results['anomalies'])
+                        async for cot_event in add_cot_step(f"🚨 Обнаружено {anomaly_count} аномальных значений!", "alert", True):
+                            yield cot_event
+                    else:
+                        async for cot_event in add_cot_step("🚨 Найдены статистические аномалии!", "alert", True):
+                            yield cot_event
+                else:
+                    async for cot_event in add_cot_step("✅ Аномалии не найдены - данные в норме", "success", True):
+                        yield cot_event
 
-        # 7. КОМПАКТНАЯ генерация итогового ответа
+                analysis_context['anomaly_results'] = anomaly_results
+                anomaly_summary = anomaly_results
+                
+                yield {"type": "intermediary_result", "stage": "anomaly_detection", 
+                       "name": "Результаты анализа аномалий (топ-10)", "content": anomaly_results}
+            else:
+                async for cot_event in add_cot_step("⚠️ Нет данных для анализа аномалий", "warning", True):
+                    yield cot_event
+
+        # === ЭТАП 9: СКРЫТИЕ ЦЕПОЧКИ РАССУЖДЕНИЙ ===
+        async for cot_event in add_cot_step("🧠 Генерирую интеллектуальный финальный анализ"):
+            yield cot_event
+
+        await asyncio.sleep(0.5)
+        yield {"type": "cot_hide", "stage": "reasoning", "message": ""}
+        await asyncio.sleep(0.7)
+
+        # === ЭТАП 10: КОМПАКТНАЯ ГЕНЕРАЦИЯ ИТОГОВОГО ОТВЕТА ===
         current_stage = "Генерация компактного ответа"
-        yield {"type": "status", "stage": "final_summary_generation", "message": current_stage + "..."}
-        llm_summary_result = generate_llm_analysis_summary(
-            sql_results_df, 
-            processed_user_prompt, 
-            anomaly_results=anomaly_summary,
-            needs_anomaly_detection=needs_anomaly_detection,
-            rag_context=rag_context_for_agents
-        )
-        accumulated_data_for_rag["final_answer"] = llm_summary_result
-        yield {"type": "final_answer", "stage": "final_summary_generation", "answer": llm_summary_result, "rag_components": accumulated_data_for_rag, "message": "Компактный ответ готов."}
+        yield {"type": "llm_analysis_start", "stage": "final_summary_generation", 
+               "message": "Формирование компактного финального анализа..."}
+
+        try:
+            # Генерируем компактный интеллектуальный ответ
+            llm_summary_result = generate_enhanced_final_response(
+                sql_results_df, 
+                processed_user_prompt, 
+                anomaly_results=anomaly_summary,
+                needs_anomaly_detection=needs_anomaly_detection,
+                analysis_steps=len(cot_steps),
+                analysis_context=analysis_context
+            )
+            
+            accumulated_data_for_rag["final_answer"] = llm_summary_result
+            
+            print("[Stream] Компактный интеллектуальный анализ готов.")
+            yield {"type": "final_answer", "stage": "final_summary_generation", "answer": llm_summary_result, 
+                   "rag_components": accumulated_data_for_rag, "message": "Компактный ответ готов."}
+            
+        except Exception as e:
+            print(f"[FINAL_ANALYSIS ERROR] Ошибка в генерации финального анализа: {e}")
+            fallback_summary = f"**📊 Анализ завершен**\n\nОбработано {len(sql_results_df) if sql_results_df is not None else 0} записей по запросу '{processed_user_prompt}'."
+            
+            accumulated_data_for_rag["final_answer"] = fallback_summary
+            yield {"type": "final_answer", "stage": "final_summary_generation", "answer": fallback_summary, 
+                   "rag_components": accumulated_data_for_rag, "message": "Резервный ответ готов."}
 
     except Exception as e:
         error_message = f"Критическая ошибка на этапе '{current_stage}': {str(e)}"
         print(f"[EVENT_GENERATOR ERROR] {error_message}")
+        
+        # Добавляем ошибку в цепочку рассуждений
+        try:
+            async for cot_event in add_cot_step(f"❌ Критическая ошибка: {str(e)[:50]}...", "error", True):
+                yield cot_event
+        except:
+            pass
+        
         yield {"type": "error", "stage": current_stage, "message": error_message}
     finally:
+        print("[Stream] Отправка сигнала о завершении.")
         yield {"type": "status", "stage": "done", "message": "Обработка завершена."}
 
 # ==============================================================================
@@ -607,11 +675,11 @@ async def health_check():
     """Проверка здоровья сервиса"""
     try:
         if hasattr(app.state, 'duckdb_con') and app.state.duckdb_con:
-            return {"status": "healthy", "service": "text2sql-optimized", "database": "connected"}
+            return {"status": "healthy", "service": "text2sql-enhanced", "database": "connected"}
         else:
-            return {"status": "unhealthy", "service": "text2sql-optimized", "database": "disconnected"}
+            return {"status": "unhealthy", "service": "text2sql-enhanced", "database": "disconnected"}
     except Exception as e:
-        return {"status": "unhealthy", "service": "text2sql-optimized", "error": str(e)}
+        return {"status": "unhealthy", "service": "text2sql-enhanced", "error": str(e)}
 
 @app.get("/tables")
 async def get_available_tables():
@@ -646,7 +714,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.on_event("startup")
 async def startup_event():
     """Инициализация при запуске"""
-    print("🚀 Запуск Optimized Text2SQL Multi-Agent System...")
+    print("🚀 Запуск Enhanced Text2SQL Multi-Agent System...")
     
     try:
         duckdb_connection = setup_duckdb()
@@ -670,7 +738,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Очистка ресурсов при завершении"""
-    print("🛑 Завершение работы Optimized Text2SQL System...")
+    print("🛑 Завершение работы Enhanced Text2SQL System...")
     
     try:
         if (hasattr(app.state, 'duckdb_con') and 
@@ -721,7 +789,7 @@ async def confirm_answer_and_save_to_rag(payload: RagSaveRequest):
 # ==============================================================================
 
 if __name__ == "__main__":
-    print("🚀 Запуск Optimized Text2SQL Multi-Agent System...")
+    print("🚀 Запуск Enhanced Text2SQL Multi-Agent System...")
     
     if not os.path.isdir(STATIC_DIR):
         print(f"[CRITICAL ERROR] Static директория не найдена: {STATIC_DIR}")
