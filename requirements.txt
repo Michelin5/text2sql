@@ -9,3 +9,5 @@ python-dotenv
 numpy
 scikit-learn
 uvicorn
+kneed
+langchain-chroma
