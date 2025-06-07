@@ -41,29 +41,36 @@ TABLE_CONTEXT = """
 ПРИМЕЧАНИЕ ДЛЯ ГЕНЕРАЦИИ SQL: Всегда включай `municipal_district_name` в SELECT, если требуются названия территорий. Для строковых литералов в SQL используй одинарные кавычки. Убедись, что любая колонка, используемая в WHERE, SELECT, GROUP BY или ORDER BY, доступна из таблиц в FROM/JOIN и правильно квалифицирована алиасом.
 """
 
+
 # ==============================================================================
 # АГЕНТ 0: КООРДИНАТОР
 # ==============================================================================
 
 def agent0_coordinator(user_prompt):
-    """Агент-координатор: определяет необходимость анализа аномалий"""
+    """Агент-координатор: определяет необходимость анализа аномалий и трендов"""
     system_instruction = (
         "Ты — ИИ-координатор запросов. Определи тип анализа, необходимый для запроса пользователя. "
         "Если запрос содержит слова или фразы, связанные с поиском аномалий, выбросов, необычных паттернов, "
         "резких изменений, отклонений от нормы, экстремальных значений, подозрительных данных, "
-        "верни JSON: {\"needs_anomaly_detection\": true, \"analysis_type\": \"anomaly\", \"keywords\": [\"найденные ключевые слова\"]}. "
-        "Иначе верни JSON: {\"needs_anomaly_detection\": false, \"analysis_type\": \"standard\", \"keywords\": []}. "
+        "верни JSON: {\"needs_analysis\": \"anomaly\", \"keywords\": [\"найденные ключевые слова\"]}. "
+        "Если запрос содержит слова или фразы, связанные с трендами, изменениями во времени, динамикой, "
+        "ростом/падением, поворотными точками, переломами тренда, верни JSON: {\"needs_analysis\": \"trend\", \"keywords\": [\"найденные ключевые слова\"]}. "
+        "Если запрос содержит оба типа анализа, верни JSON: {\"needs_analysis\": \"both\", \"keywords\": [\"ключевые слова аномалий\", \"ключевые слова трендов\"]}. "
+        "Иначе верни JSON: {\"needs_analysis\": \"standard\", \"keywords\": []}. "
         "Ответ должен быть ТОЛЬКО JSON объектом без дополнительного текста."
     )
     response = call_giga_api_wrapper(user_prompt, system_instruction)
-    
-    # Более надежное извлечение JSON из ответа
+
     try:
-        # Сначала пытаемся напрямую распарсить весь ответ
-        return json.loads(response)
+        result = json.loads(response)
+        # Для обратной совместимости с существующим кодом
+        if 'needs_analysis' in result:
+            result['needs_anomaly_detection'] = result['needs_analysis'] in ['anomaly', 'both']
+            result['needs_trend_analysis'] = result['needs_analysis'] in ['trend', 'both']
+            result['analysis_type'] = result['needs_analysis']  # дублируем для совместимости
+        return result
     except json.JSONDecodeError:
         try:
-            # Ищем JSON объект в ответе
             import re
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
@@ -71,10 +78,16 @@ def agent0_coordinator(user_prompt):
                 return json.loads(json_str)
         except (json.JSONDecodeError, AttributeError):
             pass
-        
-        # Если ничего не получилось, логируем и возвращаем дефолт
+
         print(f"[COORDINATOR ERROR] Не удалось распарсить ответ: {response}")
-        return {"needs_anomaly_detection": False, "analysis_type": "standard", "keywords": []}
+        return {
+            "needs_analysis": "standard",
+            "needs_anomaly_detection": False,
+            "needs_trend_analysis": False,
+            "analysis_type": "standard",
+            "keywords": []
+        }
+
 
 # ==============================================================================
 # АГЕНТ 1: ПЕРЕФОРМУЛИРОВЩИК
@@ -91,6 +104,7 @@ def agent1_rephraser(user_prompt):
     )
     return call_giga_api_wrapper(user_prompt, system_instruction)
 
+
 # ==============================================================================
 # АГЕНТ 2: ПЛАНИРОВЩИК
 # ==============================================================================
@@ -104,6 +118,7 @@ def agent2_planner(formal_prompt):
     )
     return call_giga_api_wrapper(formal_prompt, system_instruction)
 
+
 # ==============================================================================
 # АГЕНТ 3: ГЕНЕРАТОР SQL (С ПОДДЕРЖКОЙ АНОМАЛИЙ)
 # ==============================================================================
@@ -113,45 +128,46 @@ def agent3_sql_generator(plan):
     system_instruction = (
         "Ты — эксперт по генерации SQL. На основе плана и TABLE_CONTEXT сгенерируй SQL-запрос. "
         "ВАЖНО: ВСЕГДА используй алиасы для таблиц (например, `p` для `population`, `ma` для `market_access`, `s` для `salary`, `mig` для `migration`, `c` для `connections`) и ВСЕГДА квалифицируй КАЖДОЕ имя столбца этим алиасом (например, `p.year`, `md.territory_id`, `s.value` для зарплаты). Это КРИТИЧЕСКИ важно для избежания ошибок неоднозначности, особенно для `territory_id` и `year`. "
-        
+
         "КРИТИЧЕСКИ ВАЖНО - ПРАВИЛА ДЛЯ ПОИСКА ПО НАЗВАНИЯМ МУНИЦИПАЛИТЕТОВ: "
-       "Каждая таблица содержит столбцы `territory_id` И `municipal_district_name`. "
-       "НИКОГДА НЕ используй точное сравнение (=) для поиска по названиям муниципалитетов! "
-       "ВСЕГДА используй ТОЛЬКО нечеткий поиск через UPPER() и LIKE с процентами. "
-       "Когда в запросе упоминается любое название места (Майкоп, Ломоносовском, майкопа, округа майкопа и т.д.), "
-       "ты ОБЯЗАТЕЛЬНО должен: "
-       "1. Извлечь ключевое слово из названия (например, из 'Ломоносовском' извлечь 'ЛОМОНОСОВ') "
-       "2. Использовать ТОЛЬКО такой паттерн: WHERE UPPER(table_alias.municipal_district_name) LIKE '%КЛЮЧЕВОЕ_СЛОВО%' "
-       "ЗАПРЕЩЕННЫЕ примеры: "
-       "- WHERE p.municipal_district_name = 'Майкоп' "
-       "- WHERE p.municipal_district_name = 'Ломоносовский' "
-       "ПРАВИЛЬНЫЕ примеры: "
-       "- WHERE UPPER(p.municipal_district_name) LIKE '%МАЙКОП%' "
-       "- WHERE UPPER(p.municipal_district_name) LIKE '%ЛОМОНОСОВ%' "
-       "Это найдет и 'Ломоносовский', и 'Ломоносовский муниципальный район', и любые другие варианты. "
-       "Это обязательно для всех географических названий без исключений! "
-       "ВСЕГДА включай столбец municipal_district_name в SELECT для отображения полного названия МО. "
-        
+        "Каждая таблица содержит столбцы `territory_id` И `municipal_district_name`. "
+        "НИКОГДА НЕ используй точное сравнение (=) для поиска по названиям муниципалитетов! "
+        "ВСЕГДА используй ТОЛЬКО нечеткий поиск через UPPER() и LIKE с процентами. "
+        "Когда в запросе упоминается любое название места (Майкоп, Ломоносовском, майкопа, округа майкопа и т.д.), "
+        "ты ОБЯЗАТЕЛЬНО должен: "
+        "1. Извлечь ключевое слово из названия (например, из 'Ломоносовском' извлечь 'ЛОМОНОСОВ') "
+        "2. Использовать ТОЛЬКО такой паттерн: WHERE UPPER(table_alias.municipal_district_name) LIKE '%КЛЮЧЕВОЕ_СЛОВО%' "
+        "ЗАПРЕЩЕННЫЕ примеры: "
+        "- WHERE p.municipal_district_name = 'Майкоп' "
+        "- WHERE p.municipal_district_name = 'Ломоносовский' "
+        "ПРАВИЛЬНЫЕ примеры: "
+        "- WHERE UPPER(p.municipal_district_name) LIKE '%МАЙКОП%' "
+        "- WHERE UPPER(p.municipal_district_name) LIKE '%ЛОМОНОСОВ%' "
+        "Это найдет и 'Ломоносовский', и 'Ломоносовский муниципальный район', и любые другие варианты. "
+        "Это обязательно для всех географических названий без исключений! "
+        "ВСЕГДА включай столбец municipal_district_name в SELECT для отображения полного названия МО. "
+
         "ОСОБЫЕ ПРАВИЛА ДЛЯ АНОМАЛИЙ: "
         "Если план касается поиска аномалий, выбросов или необычных значений, "
         "НЕ включай в SQL логику фильтрации аномалий (WHERE value < lower_bound OR value > upper_bound). "
         "Вместо этого создай простой SELECT запрос, который возвращает ВСЕ данные из соответствующей таблицы "
         "с необходимыми JOIN для получения названий территорий. "
         "Агент аномалий выполнит анализ на полученных данных самостоятельно. "
-        
+
         "Вывод должен быть ТОЛЬКО SQL-запрос в блоке ``````."
         f"\n\n{TABLE_CONTEXT}"
     )
-    
+
     sql_query_block = call_giga_api_wrapper(plan, system_instruction)
     if sql_query_block and "```" in sql_query_block:
         try:
             return sql_query_block.split("```sql")[1].split("```")[0]
-        except IndexError: 
+        except IndexError:
             return sql_query_block
     elif sql_query_block and sql_query_block.strip().upper().startswith("SELECT"):
         return sql_query_block.strip()
     return sql_query_block
+
 
 # ==============================================================================
 # АГЕНТ 4: ВАЛИДАТОР SQL
@@ -185,6 +201,7 @@ def agent_sql_validator(sql_query, plan):
         print(f"[ОШИБКА ВАЛИДАТОРА] Не удалось распарсить JSON от валидатора: {response_str}")
         return {"is_valid": False, "message": "Ошибка валидатора: невалидный JSON ответ.", "corrected_sql": None}
 
+
 # ==============================================================================
 # АГЕНТ 5: ИСПРАВИТЕЛЬ SQL
 # ==============================================================================
@@ -209,14 +226,15 @@ def agent_sql_fixer(failed_sql_query, error_message, plan):
     )
     prompt_for_llm = f"Неудавшийся SQL-запрос:\n```sql\n{failed_sql_query}\n```"
     corrected_sql_block = call_giga_api_wrapper(prompt_for_llm, system_instruction)
-    
+
     if corrected_sql_block and "```sql" in corrected_sql_block:
         try:
             corrected_sql = corrected_sql_block.split("``````", 1)[0].strip()
-            return corrected_sql if corrected_sql else None # Возвращаем None если блок пустой
+            return corrected_sql if corrected_sql else None  # Возвращаем None если блок пустой
         except IndexError:
-            return None 
+            return None
     return None
+
 
 # ==============================================================================
 # АГЕНТ АНОМАЛИЙ: ОБНАРУЖЕНИЕ И АНАЛИЗ
@@ -226,33 +244,33 @@ def agent_anomaly_detector(sql_result_df, user_prompt):
     """Агент обнаружения аномалий в данных с исправленной JSON сериализацией"""
     if sql_result_df is None or sql_result_df.empty:
         return {"anomalies_found": False, "message": "Нет данных для анализа аномалий"}
-    
+
     anomalies = []
     numeric_columns = sql_result_df.select_dtypes(include=[np.number]).columns
-    
+
     if len(numeric_columns) == 0:
         return {"anomalies_found": False, "message": "В данных нет числовых столбцов для анализа"}
-    
+
     # Для данных миграции применяем групповой анализ
     if 'territory_id' in sql_result_df.columns and 'value' in sql_result_df.columns:
         return analyze_migration_anomalies(sql_result_df, user_prompt)
-    
+
     # Стандартный анализ для других типов данных
     for column in numeric_columns:
         column_data = sql_result_df[column].dropna()
         if len(column_data) < 4:
             continue
-            
+
         # IQR метод
         Q1 = column_data.quantile(0.25)
         Q3 = column_data.quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
-        
+
         outliers_mask = (sql_result_df[column] < lower_bound) | (sql_result_df[column] > upper_bound)
         outliers = sql_result_df[outliers_mask]
-        
+
         if not outliers.empty:
             anomaly_info = {
                 "column": column,
@@ -268,13 +286,13 @@ def agent_anomaly_detector(sql_result_df, user_prompt):
                 }
             }
             anomalies.append(anomaly_info)
-    
+
     if anomalies:
         try:
             anomaly_description = generate_anomaly_description(anomalies, user_prompt)
         except Exception as e:
             anomaly_description = f"Обнаружены аномалии в {len(anomalies)} столбцах"
-        
+
         return {
             "anomalies_found": True,
             "anomaly_count": len(anomalies),
@@ -284,29 +302,30 @@ def agent_anomaly_detector(sql_result_df, user_prompt):
     else:
         return {"anomalies_found": False, "message": "Аномалии в данных не обнаружены"}
 
+
 def analyze_migration_anomalies(df, user_prompt):
     """Специализированный анализ аномалий для миграционных данных"""
     anomalies = []
-    
+
     # Группируем по территориям и анализируем
     for territory_id in df['territory_id'].unique():
         territory_data = df[df['territory_id'] == territory_id]['value']
-        
+
         if len(territory_data) < 3:
             continue
-            
+
         # Z-score метод для каждой территории
         mean_val = territory_data.mean()
         std_val = territory_data.std()
-        
+
         if std_val == 0:  # Нет вариации
             continue
-            
+
         z_scores = np.abs((territory_data - mean_val) / std_val)
         outlier_threshold = 2.5  # Более мягкий порог для миграционных данных
-        
+
         outliers = territory_data[z_scores > outlier_threshold]
-        
+
         if not outliers.empty:
             # ИСПРАВЛЕНИЕ: Правильное использование iloc с квадратными скобками
             if 'municipal_district_name' in df.columns:
@@ -317,7 +336,7 @@ def analyze_migration_anomalies(df, user_prompt):
                     territory_name = str(territory_id)
             else:
                 territory_name = str(territory_id)
-            
+
             anomaly_info = {
                 "territory": territory_name,
                 "territory_id": str(territory_id),  # Конвертируем в строку
@@ -332,10 +351,10 @@ def analyze_migration_anomalies(df, user_prompt):
                 }
             }
             anomalies.append(anomaly_info)
-    
+
     if anomalies:
         description = f"Обнаружены миграционные аномалии в {len(anomalies)} территориях. Анализ выявил необычные миграционные потоки, которые значительно отклоняются от нормальных паттернов для данных территорий."
-        
+
         return {
             "anomalies_found": True,
             "anomaly_count": len(anomalies),
@@ -343,12 +362,13 @@ def analyze_migration_anomalies(df, user_prompt):
             "description": description,
             "analysis_method": "Z-score по территориям"
         }
-    
+
     return {
-        "anomalies_found": False, 
+        "anomalies_found": False,
         "message": "Аномалии в миграционных данных не обнаружены",
         "analyzed_territories": len(df['territory_id'].unique())
     }
+
 
 def generate_anomaly_description(anomalies, user_prompt):
     """Генерирует человекочитаемое описание найденных аномалий"""
@@ -357,40 +377,184 @@ def generate_anomaly_description(anomalies, user_prompt):
         "понятное описание на русском языке. Объясни что обнаружено, в каких столбцах, "
         "и что это может означать. Будь конкретным и полезным."
     )
-    
+
     anomaly_summary = "Найденные аномалии:\n"
     for anomaly in anomalies:
         anomaly_summary += f"- Столбец '{anomaly['column']}': {anomaly['anomaly_count']} аномальных значений ({anomaly['anomaly_percentage']}%)\n"
-    
+
     prompt = f"Исходный запрос: {user_prompt}\n\n{anomaly_summary}"
-    
+
     try:
         return call_giga_api_wrapper(prompt, system_instruction)
     except Exception as e:
         return f"Обнаружены аномалии, но не удалось сгенерировать описание: {str(e)}"
 
+
 # ==============================================================================
 # АГЕНТ 6: ГЕНЕРАТОР ОТВЕТОВ (ОПЦИОНАЛЬНЫЙ)
 # ==============================================================================
 
-def agent4_answer_generator(sql_result_df, initial_user_prompt):
-    """Генерирует финальный ответ на основе данных"""
-    if sql_result_df is None: 
+def agent4_answer_generator(sql_result_df, initial_user_prompt, anomaly_results=None, trend_results=None):
+    """Генерирует финальный ответ на основе данных, аномалий и трендов"""
+    if sql_result_df is None:
         return "К сожалению, не удалось получить данные из-за ошибки SQL."
-    if sql_result_df.empty: 
+    if sql_result_df.empty:
         return "По вашему запросу данные не найдены."
-    
+
+    # Подготовка данных для LLM
     data_as_string = sql_result_df.to_markdown(index=False) if not sql_result_df.empty else "Данные отсутствуют."
+
+    # Подготовка информации об аномалиях и трендах
+    analysis_info = ""
+
+    if anomaly_results and anomaly_results.get("anomalies_found", False):
+        analysis_info += f"\n\nОбнаруженные аномалии:\n{anomaly_results.get('description', '')}"
+
+    if trend_results and trend_results.get("trends_found", False):
+        analysis_info += f"\n\nАнализ трендов:\n{trend_results.get('description', '')}"
+
     system_instruction = (
         "Ты — дружелюбный ИИ-ассистент, который объясняет результаты анализа данных простым и понятным языком. "
-        "Тебе дан исходный вопрос пользователя и данные (результат SQL в Markdown). "
-        "Сформулируй краткий, приятный и легко читаемый ответ на русском языке. "
+        "Тебе дан исходный вопрос пользователя, данные (результат SQL в Markdown) и дополнительная информация "
+        "об аномалиях и трендах (если есть). Сформулируй краткий, приятный и легко читаемый ответ на русском языке. "
         "Избегай длинных и официальных названий, используй сокращённые или привычные формы, если это возможно. "
         "Сделай текст живым и дружелюбным, чтобы пользователю было приятно читать. "
-        "Если видишь NaN, укажи, что данные отсутствуют."
+        "Если видишь NaN, укажи, что данные отсутствуют. "
+        "Сначала кратко ответь на основной вопрос, затем приведи ключевые выводы из анализа."
     )
+
     prompt_for_llm = (
         f"Исходный вопрос пользователя: \"{initial_user_prompt}\"\n\n"
-        f"Данные для ответа (Markdown):\n{data_as_string}\n\nОтвет:"
+        f"Данные для ответа (Markdown):\n{data_as_string}\n\n"
+        f"Дополнительная информация:{analysis_info}\n\nОтвет:"
     )
+
     return call_giga_api_wrapper(prompt_for_llm, system_instruction)
+
+
+# ==============================================================================
+# АГЕНТ 7: АНАЛИЗ ТРЕНДОВ И ПОВОРОТНЫХ ТОЧЕК
+# ==============================================================================
+def generate_trend_description(trend_results, user_prompt):
+    """Генерирует человекочитаемое описание найденных трендов"""
+    system_instruction = (
+        "Ты — эксперт по анализу временных рядов. На основе результатов анализа трендов создай "
+        "понятное описание на русском языке. Опиши основные тренды, их направление и силу, "
+        "а также обнаруженные поворотные точки. Будь конкретным и полезным."
+    )
+
+    trend_summary = "Результаты анализа трендов:\n"
+
+    for trend in trend_results["trend_analysis"]:
+        trend_summary += (
+            f"- Столбец '{trend['column']}': {trend['trend_direction']} тренд ({trend['trend_strength']}), "
+            f"R² = {trend['r_squared']:.2f}\n"
+        )
+
+    for point in trend_results["turning_points"]:
+        trend_summary += (
+            f"- Поворотная точка для '{point['column']}': {point['time_value']} "
+            f"(значение: {point['value']:.2f})\n"
+        )
+
+    prompt = f"Исходный запрос: {user_prompt}\n\n{trend_summary}"
+
+    try:
+        return call_giga_api_wrapper(prompt, system_instruction)
+    except Exception as e:
+        return f"Обнаружены тренды, но не удалось сгенерировать описание: {str(e)}"
+
+
+def agent_trend_analyzer(sql_result_df, user_prompt, kneed=None):
+    """
+    Анализирует временные ряды на наличие трендов и поворотных точек.
+    Возвращает словарь с результатами анализа.
+    """
+    if sql_result_df is None or sql_result_df.empty:
+        return {"trends_found": False, "message": "Нет данных для анализа трендов"}
+
+    # Проверяем наличие временных данных
+    time_columns = ['year', 'period']
+    has_time_data = any(col in sql_result_df.columns for col in time_columns)
+
+    if not has_time_data:
+        return {"trends_found": False, "message": "Данные не содержат временной информации для анализа трендов"}
+
+    results = {
+        "trends_found": False,
+        "trend_analysis": [],
+        "turning_points": [],
+        "description": ""
+    }
+
+    # Анализ для числовых столбцов
+    numeric_columns = sql_result_df.select_dtypes(include=[np.number]).columns
+
+    for column in numeric_columns:
+        if column in time_columns:
+            continue
+
+        # Подготовка данных для анализа
+        if 'year' in sql_result_df.columns:
+            time_col = 'year'
+            df_sorted = sql_result_df.sort_values('year')
+        elif 'period' in sql_result_df.columns:
+            time_col = 'period'
+            df_sorted = sql_result_df.sort_values('period')
+        else:
+            continue
+
+        values = df_sorted[column].values
+        times = df_sorted[time_col].values
+
+        if len(values) < 3:
+            continue
+
+        # Анализ тренда (линейная регрессия)
+        try:
+            from scipy.stats import linregress
+            slope, intercept, r_value, p_value, std_err = linregress(range(len(values)), values)
+
+            trend_info = {
+                "column": column,
+                "time_column": time_col,
+                "slope": float(slope),
+                "intercept": float(intercept),
+                "r_squared": float(r_value ** 2),
+                "p_value": float(p_value),
+                "trend_direction": "возрастающий" if slope > 0 else "убывающий",
+                "trend_strength": "сильный" if abs(slope) > np.std(values) else "слабый"
+            }
+
+            results["trend_analysis"].append(trend_info)
+            results["trends_found"] = True
+        except Exception as e:
+            print(f"Ошибка анализа тренда для столбца {column}: {str(e)}")
+
+        # Поиск поворотных точек (метод кусочно-линейной аппроксимации)
+        try:
+            from kneed import KneeLocator
+            kl = KneeLocator(range(len(values)), values, curve='convex' if slope > 0 else 'concave',
+                             direction='increasing')
+
+            if kl.knee is not None:
+                turning_point = {
+                    "column": column,
+                    "time_column": time_col,
+                    "time_value": times[kl.knee],
+                    "value": float(values[kl.knee]),
+                    "index": int(kl.knee),
+                    "method": "Kneedle algorithm"
+                }
+                results["turning_points"].append(turning_point)
+        except Exception as e:
+            print(f"Ошибка поиска поворотных точек для столбца {column}: {str(e)}")
+
+    # Генерация описания результатов
+    if results["trends_found"]:
+        try:
+            results["description"] = generate_trend_description(results, user_prompt)
+        except Exception as e:
+            results["description"] = f"Обнаружены тренды в {len(results['trend_analysis'])} столбцах"
+
+    return results
