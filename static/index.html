@@ -1,0 +1,937 @@
+<!DOCTYPE html>
+<html lang="ru" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Text2SQL AI Analytics Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                    colors: {
+                        border: "hsl(214.3 31.8% 91.4%)",
+                        input: "hsl(214.3 31.8% 91.4%)",
+                        ring: "hsl(222.2 84% 4.9%)",
+                        background: "hsl(0 0% 100%)",
+                        foreground: "hsl(222.2 84% 4.9%)",
+                        primary: {
+                            DEFAULT: "hsl(222.2 47.4% 11.2%)",
+                            foreground: "hsl(210 40% 98%)",
+                        },
+                        secondary: {
+                            DEFAULT: "hsl(210 40% 96.1%)",
+                            foreground: "hsl(222.2 47.4% 11.2%)",
+                        },
+                        muted: {
+                            DEFAULT: "hsl(210 40% 96.1%)",
+                            foreground: "hsl(215.4 16.3% 46.9%)",
+                        },
+                        accent: {
+                            DEFAULT: "hsl(210 40% 96.1%)",
+                            foreground: "hsl(222.2 47.4% 11.2%)",
+                        },
+                        destructive: {
+                            DEFAULT: "hsl(0 84.2% 60.2%)",
+                            foreground: "hsl(210 40% 98%)",
+                        },
+                    },
+                    borderRadius: {
+                        lg: "var(--radius)",
+                        md: "calc(var(--radius) - 2px)",
+                        sm: "calc(var(--radius) - 4px)",
+                    },
+                    animation: {
+                        "fade-in": "fadeIn 0.5s ease-in-out",
+                        "slide-up": "slideUp 0.3s ease-out",
+                        "pulse-slow": "pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+                    },
+                    keyframes: {
+                        fadeIn: {
+                            "0%": { opacity: "0" },
+                            "100%": { opacity: "1" },
+                        },
+                        slideUp: {
+                            "0%": { transform: "translateY(10px)", opacity: "0" },
+                            "100%": { transform: "translateY(0)", opacity: "1" },
+                        },
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        :root {
+            --radius: 0.5rem;
+        }
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .gradient-anomaly {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ffa726 100%);
+        }
+        .gradient-success {
+            background: linear-gradient(135deg, #4ecdc4 0%, #44a08d 100%);
+        }
+        .gradient-warning {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        }
+        .gradient-info {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+        .card-shadow {
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+        }
+        .card-shadow-lg {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .sql-block {
+            background: #0f172a;
+            color: #e2e8f0;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        }
+        .loading-spinner {
+            border: 2px solid #f3f4f6;
+            border-top: 2px solid #3b82f6;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .step-completed {
+            @apply border-l-green-500 bg-green-50;
+        }
+        .step-active {
+            @apply border-l-blue-500 bg-blue-50;
+        }
+        .step-pending {
+            @apply border-l-gray-300 bg-gray-50;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans antialiased">
+    <!-- Header -->
+    <header class="bg-white border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center py-6">
+                <div class="flex items-center space-x-3">
+                    <div class="w-8 h-8 gradient-bg rounded-lg flex items-center justify-center">
+                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <h1 class="text-2xl font-bold text-gray-900">AI Analytics Platform</h1>
+                        <p class="text-sm text-gray-500">Интеллектуальный анализ данных с обнаружением аномалий</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2 text-sm text-gray-500">
+                        <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                        <span>Система активна</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Query Input Section -->
+        <div class="mb-8">
+            <div class="bg-white rounded-xl card-shadow-lg p-6">
+                <div class="mb-4">
+                    <label for="userPrompt" class="block text-sm font-medium text-gray-700 mb-2">
+                        Введите ваш запрос
+                    </label>
+                    <textarea 
+                        id="userPrompt" 
+                        rows="4" 
+                        class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none transition-all duration-200"
+                        placeholder="Например: Найди аномалии в данных о населении или Покажи топ 5 регионов по зарплатам в 2024 году..."
+                    ></textarea>
+                </div>
+                
+                <!-- Error Message -->
+                <div id="errorMessage" class="hidden mb-4 p-4 bg-red-50 border-l-4 border-red-400 rounded-r-lg">
+                    <div class="flex">
+                        <svg class="w-5 h-5 text-red-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path>
+                        </svg>
+                        <div class="text-red-700" id="errorText"></div>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between">
+                    <div class="text-sm text-gray-500">
+                        <kbd class="px-2 py-1 bg-gray-100 rounded text-xs">Shift</kbd> + 
+                        <kbd class="px-2 py-1 bg-gray-100 rounded text-xs">Enter</kbd> для отправки
+                    </div>
+                    <button 
+                        id="processButton" 
+                        onclick="runPipeline()" 
+                        class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        <span id="buttonSpinner" class="loading-spinner mr-2 hidden"></span>
+                        <span id="buttonText">Анализировать</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RAG Status Message Area -->
+        <div id="ragStatusSection" class="mb-6 hidden">
+            <div id="ragStatusMessage" class="p-4 text-sm rounded-lg">
+                <!-- RAG status messages will appear here -->
+            </div>
+        </div>
+
+        <!-- Coordination and Enhancement Section -->
+        <div id="coordinationSection" class="mb-8 hidden">
+            <div class="grid gap-6">
+                <div id="coordinationOutput"></div>
+                <div id="queryEnhancementOutput"></div>
+                <div id="clarificationOutput"></div>
+            </div>
+        </div>
+
+        <!-- Processing Pipeline -->
+        <div class="grid lg:grid-cols-3 gap-8">
+            <!-- Left Column: Process Steps -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-xl card-shadow-lg overflow-hidden">
+                    <div class="px-6 py-4 border-b bg-gray-50">
+                        <h2 class="text-lg font-semibold text-gray-900">Процесс Выполнения</h2>
+                        <p class="text-sm text-gray-500 mt-1">Пошаговая обработка вашего запроса</p>
+                    </div>
+                    
+                    <div class="divide-y">
+                        <!-- Step 1: Formal Request -->
+                        <div id="step-agent1" class="step-item p-6 border-l-4 step-pending transition-all duration-300">
+                            <div class="flex items-start justify-between">
+                                <div class="flex-1">
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                                        <h3 class="text-sm font-medium text-gray-900">Формализация запроса</h3>
+                                    </div>
+                                    <div class="mt-2 text-sm text-gray-600" id="rephrasedPromptOutput">
+                                        Ожидание...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 2: Plan -->
+                        <div id="step-agent2" class="step-item p-6 border-l-4 step-pending transition-all duration-300">
+                            <div class="flex items-start justify-between">
+                                <div class="flex-1">
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                                        <h3 class="text-sm font-medium text-gray-900">Создание плана</h3>
+                                    </div>
+                                    <div class="mt-2 text-sm text-gray-600" id="planOutput">
+                                        Ожидание...
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 3: SQL Generation -->
+                        <div id="step-agent3" class="step-item p-6 border-l-4 step-pending transition-all duration-300">
+                            <div class="flex items-start justify-between">
+                                <div class="flex-1">
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                                        <h3 class="text-sm font-medium text-gray-900">Генерация SQL</h3>
+                                    </div>
+                                    <div class="mt-2" id="sqlOutput">
+                                        <div class="text-sm text-gray-600">Ожидание...</div>
+                                    </div>
+                                    <div id="sqlValidationOutput" class="mt-2"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 4: Execution -->
+                        <div id="step-agent4" class="step-item p-6 border-l-4 step-pending transition-all duration-300">
+                            <div class="flex items-start justify-between">
+                                <div class="flex-1">
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                                        <h3 class="text-sm font-medium text-gray-900">Выполнение запроса</h3>
+                                    </div>
+                                    <div class="mt-2" id="executionOutput">
+                                        <div class="text-sm text-gray-600">Ожидание...</div>
+                                    </div>
+                                    <div id="sqlErrorOutput" class="hidden mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                                        <div class="text-sm text-red-600"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 5: Anomaly Analysis -->
+                        <div id="step-anomaly" class="step-item p-6 border-l-4 step-pending transition-all duration-300 hidden">
+                            <div class="flex items-start justify-between">
+                                <div class="flex-1">
+                                    <div class="flex items-center space-x-2">
+                                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                                        <h3 class="text-sm font-medium text-gray-900">🔍 Анализ аномалий</h3>
+                                    </div>
+                                    <div class="mt-2" id="anomalyOutput">
+                                        <div class="text-sm text-gray-600">Ожидание...</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Results -->
+            <div class="lg:col-span-1">
+                <div class="bg-white rounded-xl card-shadow-lg overflow-hidden h-fit">
+                    <div class="px-6 py-4 border-b bg-gray-50">
+                        <h2 class="text-lg font-semibold text-gray-900">Результат Анализа</h2>
+                        <p class="text-sm text-gray-500 mt-1">Итоговый ответ на ваш запрос</p>
+                    </div>
+                    
+                    <div class="p-6">
+                        <div id="finalAnswerOutput" class="prose prose-sm max-w-none">
+                            <div class="text-center py-8">
+                                <svg class="w-12 h-12 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                </svg>
+                                <p class="text-gray-500">Здесь появится результат анализа</p>
+                            </div>
+                        </div>
+                        <!-- Save to RAG Button and Status -->
+                        <div id="saveToRagContainer" class="mt-6 hidden">
+                            <button id="saveToRagButton" onclick="saveToRag()" class="w-full inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-4 h-4 mr-2">
+                                    <path fill-rule="evenodd" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5H8.75v4.5A.75.75 0 0 1 7.25 13V8.5H2.75a.75.75 0 0 1 0-1.5h4.5V2.75A.75.75 0 0 1 8 2Z" clip-rule="evenodd" />
+                                </svg>
+                                Сохранить этот результат в базу знаний
+                            </button>
+                            <div id="saveToRagStatus" class="mt-2 text-xs text-center"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="mt-6 bg-white rounded-xl card-shadow p-6">
+                    <h3 class="text-sm font-medium text-gray-900 mb-4">Быстрые запросы</h3>
+                    <div class="space-y-2">
+                        <button onclick="useExample('Найди аномалии в данных о населении')" class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+                            🔍 Поиск аномалий в населении
+                        </button>
+                        <button onclick="useExample('Покажи топ 5 регионов по зарплатам')" class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+                            💰 Топ регионов по зарплатам
+                        </button>
+                        <button onclick="useExample('Анализ миграционных потоков за 2023 год')" class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+                            📊 Анализ миграции
+                        </button>
+                        <button onclick="useExample('Сравни доступность рынков по регионам')" class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition-colors">
+                            🏪 Доступность рынков
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const processButton = document.getElementById('processButton');
+        const buttonSpinner = document.getElementById('buttonSpinner');
+        const buttonText = document.getElementById('buttonText');
+        const errorMessageDiv = document.getElementById('errorMessage');
+        const errorText = document.getElementById('errorText');
+        
+        // RAG UI Elements
+        const ragStatusSection = document.getElementById('ragStatusSection');
+        const ragStatusMessageEl = document.getElementById('ragStatusMessage');
+        const saveToRagContainer = document.getElementById('saveToRagContainer');
+        const saveToRagButton = document.getElementById('saveToRagButton');
+        const saveToRagStatusEl = document.getElementById('saveToRagStatus');
+
+        let currentRagComponents = null; // To store data for saving to RAG
+
+        const coordinationSection = document.getElementById('coordinationSection');
+
+        const outputElements = {
+            coordination: document.getElementById('coordinationOutput'),
+            queryEnhancement: document.getElementById('queryEnhancementOutput'),
+            clarification: document.getElementById('clarificationOutput'),
+            rephrasedPrompt: document.getElementById('rephrasedPromptOutput'),
+            plan: document.getElementById('planOutput'),
+            sql: document.getElementById('sqlOutput'),
+            sqlValidation: document.getElementById('sqlValidationOutput'),
+            execution: document.getElementById('executionOutput'),
+            sqlError: document.getElementById('sqlErrorOutput'),
+            anomaly: document.getElementById('anomalyOutput'),
+            finalAnswer: document.getElementById('finalAnswerOutput')
+        };
+        
+        const BACKEND_API_URL = 'http://127.0.0.1:5002/process_query_stream';
+
+        let eventSource;
+
+        function runPipeline() {
+            try {
+                const userPrompt = document.getElementById('userPrompt').value;
+                if (!userPrompt.trim()) {
+                    showError("Пожалуйста, введите ваш запрос для анализа данных.");
+                    return;
+                }
+
+                resetInterface();
+                setButtonLoading(true);
+
+                const streamUrl = `${BACKEND_API_URL}?user_prompt=${encodeURIComponent(userPrompt)}`;
+                if (eventSource) {
+                    eventSource.close(); // Close any existing connection
+                }
+                eventSource = new EventSource(streamUrl);
+
+                eventSource.onopen = function() {
+                    console.log("Connection to server opened.");
+                    ragStatusSection.classList.remove('hidden');
+                    ragStatusMessageEl.textContent = 'Подключение к серверу установлено...';
+                    ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-gray-100 text-gray-700';
+                };
+
+                eventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log("Received SSE:", data); 
+
+                        const type = data.type;
+                        const stage = data.stage;
+                        const message = data.message;
+                        const content = data.content; 
+                        const name = data.name; 
+
+                        if (type === "status" && stage && stage.startsWith("rag_")) {
+                            ragStatusSection.classList.remove('hidden');
+                            ragStatusMessageEl.textContent = message || 'Обновление статуса RAG...';
+                            if (stage === "rag_exact_match") {
+                                ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-green-50 text-green-700 border border-green-300';
+                            } else if (stage === "rag_similar_match") {
+                                ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-blue-50 text-blue-700 border border-blue-300';
+                                if (data.similar_data_preview) {
+                                    try {
+                                        const previewHtml = Object.entries(data.similar_data_preview)
+                                            .map(([key, value]) => `<div><strong class="font-medium">${key}:</strong> ${String(value).substring(0,100)}${String(value).length > 100 ? '...' : ''}</div>`)
+                                            .join('');
+                                        ragStatusMessageEl.innerHTML = `<p>${message}</p><div class="mt-2 text-xs p-2 bg-blue-100 rounded">${previewHtml}</div>`;
+                                    } catch (e) { console.error("Error rendering RAG preview", e); }
+                                }
+                            } else if (stage === "rag_no_match" || stage === "rag_check") {
+                                ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-gray-100 text-gray-700';
+                            }
+                        }
+
+                        switch (type) {
+                            case "status":
+                                if (stage === "coordinator") {
+                                    coordinationSection.classList.remove('hidden');
+                                    outputElements.coordination.innerHTML = `<div class="p-4 bg-indigo-50 rounded-lg text-sm text-indigo-700">${message}</div>`;
+                                    updateStep('step-agent1', 'active');
+                                } else if (stage === "rephraser") {
+                                    updateStep('step-agent1', 'active');
+                                    outputElements.rephrasedPrompt.innerHTML = `<div class="text-sm">${message || "Формализация..."}</div>`;
+                                } else if (stage === "planner") {
+                                    updateStep('step-agent2', 'active');
+                                    outputElements.plan.innerHTML = `<div class="text-sm whitespace-pre-line">${message || "Планирование..."}</div>`;
+                                } else if (stage === "sql_generator") {
+                                    updateStep('step-agent3', 'active');
+                                    outputElements.sql.innerHTML = `<div class="text-sm text-gray-600">${message || "Генерация SQL..."}</div>`;
+                                } else if (stage === "sql_validation" || stage === "sql_auto_correction" || stage === "sql_fixer") {
+                                     outputElements.sqlValidation.innerHTML += createLogEntry(message, (stage === "sql_validation" && data.content && data.content.is_valid === false) ? "warning" : "info");
+                                } else if (stage === "sql_execution" || stage === "sql_execution_retry") {
+                                    updateStep('step-agent3', 'completed');
+                                    updateStep('step-agent4', 'active');
+                                    outputElements.execution.innerHTML = createLoadingMessage(message || "Выполнение SQL...");
+                                } else if (stage === "anomaly_detection") {
+                                    const anomalyStepEl = document.getElementById('step-anomaly');
+                                    anomalyStepEl.classList.remove('hidden');
+                                    updateStep('step-anomaly', 'active');
+                                    outputElements.anomaly.innerHTML = createLoadingMessage(message || "Анализ аномалий...");
+                                } else if (stage === "done") {
+                                    console.log("Stream finished.");
+                                    if (eventSource) eventSource.close();
+                                    setButtonLoading(false);
+                                }
+                                break;
+
+                            case "intermediary_result":
+                                if (stage === "rephraser") {
+                                    updateStep('step-agent1', 'completed');
+                                    outputElements.rephrasedPrompt.innerHTML = `<div class="text-sm">${content || "Нет данных."}</div>`;
+                                    updateStep('step-agent2', 'active');
+                                } else if (stage === "planner") {
+                                    updateStep('step-agent2', 'completed');
+                                    outputElements.plan.innerHTML = `<div class="text-sm whitespace-pre-line">${content || "Нет данных."}</div>`;
+                                    updateStep('step-agent3', 'active');
+                                } else if (stage === "sql_generator" || stage === "sql_fixer" || stage === "sql_fixer_db_error" || (stage === "sql_validation" && data.language === "sql" && data.message === "SQL прошел валидацию." ) ) {
+                                    updateStep('step-agent3', 'active'); 
+                                    outputElements.sql.innerHTML = `<pre class="sql-block text-xs p-3 rounded-lg overflow-x-auto">${content}</pre>`;
+                                } else if (stage === "anomaly_detection") {
+                                    updateStep('step-anomaly', 'completed');
+                                    displayAnomalyResults(content); 
+                                }
+                                break;
+                            
+                            case "sql_result": 
+                                updateStep('step-agent4', 'completed');
+                                displaySqlResultsTable(data.data, data.row_count);
+                                if (document.getElementById('step-anomaly').classList.contains('hidden')) {
+                                    // No anomaly step planned
+                                } else {
+                                   updateStep('step-anomaly', 'active'); 
+                                }
+                                break;
+                        
+                            case "final_answer": 
+                                outputElements.finalAnswer.innerHTML = marked.parse(data.answer || "<p>Ответ не был сгенерирован.</p>", { breaks: true, gfm: true });
+                                
+                                if (data.stage === "rag_exact_match") {
+                                    ragStatusSection.classList.remove('hidden');
+                                    ragStatusMessageEl.textContent = data.message || "Найден точный ответ в базе знаний.";
+                                    ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-green-50 text-green-700 border border-green-300';
+                                    
+                                    const skippedMessage = `<div class="text-sm text-gray-500">Шаг пропущен (ответ из базы знаний)</div>`;
+                                    
+                                    updateStep('step-agent1', 'skipped_rag');
+                                    if(outputElements.rephrasedPrompt) outputElements.rephrasedPrompt.innerHTML = skippedMessage;
+                                    
+                                    updateStep('step-agent2', 'skipped_rag');
+                                    if(outputElements.plan) outputElements.plan.innerHTML = skippedMessage;
+                                
+                                    updateStep('step-agent3', 'skipped_rag');
+                                    if(outputElements.sql) outputElements.sql.innerHTML = skippedMessage;
+                                    if(outputElements.sqlValidation) outputElements.sqlValidation.innerHTML = ''; // Clear validation log
+                                
+                                    updateStep('step-agent4', 'skipped_rag');
+                                    if(outputElements.execution) outputElements.execution.innerHTML = skippedMessage;
+                                    if(outputElements.sqlError) outputElements.sqlError.classList.add('hidden');
+                                
+                                    const anomalyStepEl = document.getElementById('step-anomaly');
+                                    // If anomaly step is visible (meaning it was intended to run), mark as skipped.
+                                    // If it's hidden, it means it wasn't going to run anyway, so no visual change needed for it.
+                                    if (anomalyStepEl && !anomalyStepEl.classList.contains('hidden')) {
+                                        updateStep('step-anomaly', 'skipped_rag');
+                                        if(outputElements.anomaly) outputElements.anomaly.innerHTML = skippedMessage;
+                                    }
+                                }
+
+                                if (data.rag_components) {
+                                    currentRagComponents = data.rag_components;
+                                    saveToRagContainer.classList.remove('hidden');
+                                    saveToRagButton.disabled = false;
+                                    // Corrected SVG to "plus" icon for initial save state
+                                    saveToRagButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-4 h-4 mr-2"><path fill-rule="evenodd" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5H8.75v4.5A.75.75 0 0 1 7.25 13V8.5H2.75a.75.75 0 0 1 0-1.5h4.5V2.75A.75.75 0 0 1 8 2Z" clip-rule="evenodd" /></svg> Сохранить этот результат в базу знаний`;
+                                    saveToRagStatusEl.textContent = '';
+                                }
+                                setButtonLoading(false); 
+                                break;
+                        
+                            case "clarification_needed":
+                                coordinationSection.classList.remove('hidden');
+                                displayClarificationRequest(data.data); 
+                                setButtonLoading(false);
+                                if (eventSource) eventSource.close(); 
+                                break;
+                        
+                            case "warning":
+                                if (stage === "sql_validation") {
+                                    outputElements.sqlValidation.innerHTML += createLogEntry(message, "warning");
+                                } else {
+                                    console.warn(`Warning (${stage}): ${message}`);
+                                    const generalMessageArea = document.getElementById('generalMessageArea'); 
+                                    if (generalMessageArea) { // You would need to add <div id="generalMessageArea"></div> to your HTML
+                                        generalMessageArea.innerHTML = `<div class="p-4 bg-yellow-50 border-l-4 border-yellow-400 text-yellow-700">${message}</div>`;
+                                        generalMessageArea.classList.remove('hidden');
+                                    } else { // Fallback to ragStatusMessage if general one doesn't exist
+                                        ragStatusSection.classList.remove('hidden');
+                                        ragStatusMessageEl.innerHTML = `<p class="font-semibold">Предупреждение:</p><p>${message}</p>`;
+                                        ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-yellow-50 text-yellow-700 border border-yellow-300';
+                                    }
+                                }
+                                break;
+
+                            case "error":
+                                showError(`Ошибка (${stage || 'Общая'}): ${message}`);
+                                if (stage === "sql_execution" || stage === "sql_execution_retry") {
+                                    updateStep('step-agent4', 'error');
+                                    outputElements.execution.innerHTML = createErrorMessage(message);
+                                } else if (stage === "rag_check") {
+                                    ragStatusSection.classList.remove('hidden');
+                                    ragStatusMessageEl.textContent = message;
+                                    ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-red-50 text-red-700 border border-red-300';
+                                }
+                                setButtonLoading(false);
+                                if (eventSource) eventSource.close(); 
+                                break;
+                            
+                            default:
+                                console.warn("Получен неизвестный тип события:", data);
+                        }
+                    } catch (e) {
+                        console.error("Error processing SSE message:", e);
+                        console.error("Problematic event data:", event ? event.data : "N/A");
+                        // Optionally show a generic error to the user for this message
+                        // showError("Произошла ошибка при обработке ответа от сервера.");
+                        // Do not close EventSource here, try to let it continue for next messages
+                        // but ensure button is usable if it's a critical parsing error for many messages.
+                    }
+                };
+
+                eventSource.onerror = function(err) {
+                    console.error("EventSource failed:", err);
+                    showError("Ошибка соединения с сервером. Проверьте, что сервер запущен и доступен. Подробности в консоли.");
+                    if (eventSource) eventSource.close();
+                    setButtonLoading(false);
+                    ragStatusSection.classList.remove('hidden');
+                    ragStatusMessageEl.textContent = 'Ошибка соединения с сервером.';
+                    ragStatusMessageEl.className = 'p-4 text-sm rounded-lg bg-red-50 text-red-700 border border-red-300';
+                };
+            } catch (e) {
+                console.error("Error in runPipeline setup:", e);
+                showError("Внутренняя ошибка UI при запуске обработки: " + e.message);
+                setButtonLoading(false); // Ensure button is re-enabled
+            }
+        }
+        
+        function updateStep(stepId, status) { // status: 'active', 'completed', 'error', 'skipped_rag'
+            const stepElement = document.getElementById(stepId);
+            if (!stepElement) return;
+
+            const circle = stepElement.querySelector('.flex.items-center.space-x-2 > div.w-2.h-2');
+            stepElement.classList.remove('step-pending', 'step-active', 'step-completed', 'step-error', 
+                                        'border-l-gray-300', 'bg-gray-50', 
+                                        'border-l-blue-500', 'bg-blue-50',
+                                        'border-l-green-500', 'bg-green-50',
+                                        'border-l-red-500', 'bg-red-50');
+            // Remove potential custom class for skipped_rag if re-updating
+            stepElement.classList.remove('border-l-gray-400', 'bg-gray-100');
+            
+            if (status === 'active') {
+                stepElement.classList.add('step-active', 'border-l-blue-500', 'bg-blue-50');
+                if(circle) {
+                    circle.className = 'w-2 h-2 bg-blue-500 rounded-full animate-pulse';
+                    circle.innerHTML = '';
+                }
+            } else if (status === 'completed') {
+                stepElement.classList.add('step-completed', 'border-l-green-500', 'bg-green-50');
+                 if(circle) {
+                    circle.className = 'w-2 h-2 bg-green-500 rounded-full flex items-center justify-center';
+                    circle.innerHTML = `<svg class="w-1.5 h-1.5 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>`;
+                 }
+            } else if (status === 'error') {
+                stepElement.classList.add('step-error', 'border-l-red-500', 'bg-red-50');
+                if(circle) {
+                     circle.className = 'w-2 h-2 bg-red-500 rounded-full';
+                     circle.innerHTML = '';
+                }
+            } else if (status === 'skipped_rag') { // New status for RAG skip
+                stepElement.classList.add('border-l-gray-400', 'bg-gray-100'); // Neutral colors
+                if(circle) {
+                    circle.className = 'w-2 h-2 bg-gray-400 rounded-full flex items-center justify-center';
+                    // Using a simple dash or skip icon (e.g., minus sign)
+                    circle.innerHTML = `<svg class="w-1.5 h-1.5 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd"></path></svg>`;
+                }
+            } else { // pending
+                stepElement.classList.add('step-pending', 'border-l-gray-300', 'bg-gray-50');
+                if(circle) {
+                    circle.className = 'w-2 h-2 bg-gray-400 rounded-full';
+                    circle.innerHTML = '';
+                }
+            }
+        }
+
+        // Helper functions for creating common UI message formats
+        function createLoadingMessage(text) {
+            return `<div class="flex items-center space-x-2 text-sm text-blue-600"><div class="loading-spinner"></div><span>${text}</span></div>`;
+        }
+        function createSuccessMessage(text) {
+            return `<div class="flex items-center space-x-2 text-sm text-green-600"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg><span>${text}</span></div>`;
+        }
+        function createErrorMessage(text) {
+            return `<div class="flex items-center space-x-2 text-sm text-red-600"><svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg><span>${text}</span></div>`;
+        }
+         function createLogEntry(message, type = "info") { // type: info, warning, error
+            let bgColor, textColor, borderColor, icon;
+            if (type === "warning") {
+                bgColor = "bg-yellow-50"; textColor = "text-yellow-700"; borderColor = "border-yellow-300";
+                icon = `<svg class="w-4 h-4 mr-2 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 3.001-1.742 3.001H4.42c-1.53 0-2.493-1.667-1.743-3.001l5.58-9.92zM10 13a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm-1-3a1 1 0 0 1 1-1h.01a1 1 0 0 1 0 2H10a1 1 0 0 1-1-1z" clip-rule="evenodd"></path></svg>`;
+            } else if (type === "error") {
+                bgColor = "bg-red-50"; textColor = "text-red-700"; borderColor = "border-red-300";
+                icon = `<svg class="w-4 h-4 mr-2 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>`;
+            } else { // info
+                bgColor = "bg-blue-50"; textColor = "text-blue-700"; borderColor = "border-blue-300";
+                icon = `<svg class="w-4 h-4 mr-2 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0zM9 9a1 1 0 0 0 0 2v3a1 1 0 0 0 1 1h1a1 1 0 1 0 0-2v-3a1 1 0 0 0-1-1H9z" clip-rule="evenodd"></path></svg>`;
+            }
+            return `<div class="mt-1 p-2.5 text-xs ${bgColor} ${textColor} border ${borderColor} rounded-md flex items-start">${icon}<span>${message}</span></div>`;
+        }
+
+        function showError(message) {
+            errorText.textContent = message;
+            errorMessageDiv.classList.remove('hidden');
+        }
+
+        function setButtonLoading(isLoading) {
+            processButton.disabled = isLoading;
+            if (isLoading) {
+                buttonSpinner.classList.remove('hidden');
+                buttonText.textContent = 'Обработка...';
+            } else {
+                buttonSpinner.classList.add('hidden');
+                buttonText.textContent = 'Анализировать';
+            }
+        }
+
+        function displayCoordination(content) { /* Assuming content is simple string or needs specific parsing */ 
+            outputElements.coordination.innerHTML = `<div class="p-4 bg-indigo-50 rounded-lg text-sm text-indigo-700">${content.message || JSON.stringify(content)}</div>`;
+        }
+
+        function displayQueryEnhancement(content) { /* Assuming content is simple string or needs specific parsing */
+            outputElements.queryEnhancement.innerHTML = `<div class="p-4 bg-purple-50 rounded-lg text-sm text-purple-700">${content.message || JSON.stringify(content)}</div>`;
+        }
+        
+        function displayClarificationRequest(data) {
+            const suggestionsHtml = data.suggested_tables.map(table => 
+                `<button onclick="useExample('${data.examples[0].replace(/данных о населении|зарплатах по отраслям|миграции|доступности рынков/gi, table.name)}') /* Basic example adaptation */" class="block w-full text-left mt-1 px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded-md">
+                    ${table.name} - ${table.description}
+                 </button>`
+            ).join('');
+
+            outputElements.clarification.innerHTML = `
+                <div class="p-4 bg-yellow-50 border-l-4 border-yellow-400 rounded-r-lg">
+                    <h4 class="font-semibold text-yellow-800">${data.message}</h4>
+                    <p class="text-sm text-yellow-700 mt-1">${data.reason}</p>
+                    <div class="mt-3 space-y-1">${suggestionsHtml}</div>
+                    <p class="text-xs text-yellow-600 mt-3">Примеры запросов: ${data.examples.join(', ')}</p>
+                </div>`;
+            coordinationSection.classList.remove('hidden');
+        }
+        
+        function displayAnomalyResults(content) {
+            if (typeof content === 'string') { // Fallback for simple string message
+                 outputElements.anomaly.innerHTML = `<div class="p-4 bg-orange-50 rounded-lg text-sm text-orange-700">${content}</div>`;
+                 return;
+            }
+            // Assuming content is the anomaly_results object
+            let html = '<div class="p-4 space-y-3">';
+            if (content.anomalies_found) {
+                html += `<h4 class="font-semibold text-orange-800">Обнаружены аномалии:</h4>`;
+                if (content.anomalies && content.anomalies.length > 0) {
+                    html += '<ul class="list-disc list-inside text-sm text-orange-700 space-y-1">';
+                    content.anomalies.forEach(anomaly => {
+                        if (anomaly.territory) { // For migration-like anomalies
+                            html += `<li><strong>${anomaly.territory}:</strong> ${anomaly.description} (Выбросов: ${anomaly.anomaly_count}, ${anomaly.anomaly_percentage}%)</li>`;
+                        } else if (anomaly.column) { // For general column anomalies
+                             html += `<li><strong>Столбец '${anomaly.column}':</strong> ${anomaly.description} (Выбросов: ${anomaly.anomaly_count}, ${anomaly.anomaly_percentage}%)</li>`;
+                        } else {
+                            html += `<li>${JSON.stringify(anomaly)}</li>`; // Fallback
+                        }
+                    });
+                    html += '</ul>';
+                } else {
+                    html += `<p class="text-sm text-orange-700">${content.message || "Детали аномалий не предоставлены."}</p>`;
+                }
+            } else {
+                html += `<p class="text-sm text-gray-600">${content.message || "Аномалии не обнаружены или нет данных для анализа."}</p>`;
+            }
+            html += '</div>';
+            outputElements.anomaly.innerHTML = html;
+        }
+
+        function useExample(promptText) {
+            document.getElementById('userPrompt').value = promptText;
+            resetInterface(); // Reset UI before running with example
+            // Optionally, trigger runPipeline directly or let user click
+            // runPipeline(); 
+        }
+        
+        // Handle Shift+Enter to submit
+        document.getElementById('userPrompt').addEventListener('keydown', function(event) {
+            if (event.key === 'Enter' && event.shiftKey) {
+                event.preventDefault(); // Prevent newline in textarea
+                runPipeline();
+            }
+        });
+
+        // New function to save to RAG
+        async function saveToRag() {
+            if (!currentRagComponents || !currentRagComponents.user_prompt) {
+                saveToRagStatusEl.textContent = 'Ошибка: нет данных для сохранения.';
+                saveToRagStatusEl.className = 'mt-2 text-xs text-center text-red-600';
+                return;
+            }
+
+            saveToRagButton.disabled = true;
+            saveToRagButton.innerHTML = `<span class="loading-spinner mr-2"></span> Сохранение...`;
+            saveToRagStatusEl.textContent = 'Отправка данных...';
+            saveToRagStatusEl.className = 'mt-2 text-xs text-center text-blue-600';
+
+            try {
+                const response = await fetch('/llm_query/confirm_and_save', { 
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(currentRagComponents),
+                });
+
+                // Try to parse JSON regardless of ok status, as server might send error details in JSON
+                let resultJson = {};
+                try {
+                    resultJson = await response.json();
+                } catch (e) {
+                    // If parsing fails, use text content as fallback
+                    resultJson.detail = await response.text(); 
+                }
+
+
+                if (response.ok) {
+                    saveToRagStatusEl.textContent = 'Результат успешно сохранен!';
+                    saveToRagStatusEl.className = 'mt-2 text-xs text-center text-green-600';
+                    saveToRagButton.innerHTML = `Сохранено <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-4 h-4 ml-2"><path fill-rule="evenodd" d="M12.416 3.376a.75.75 0 0 1 .208 1.04l-5 7.5a.75.75 0 0 1-1.154.114l-3-3a.75.75 0 0 1 1.06-1.06l2.353 2.353 4.493-6.74a.75.75 0 0 1 1.04-.208Z" clip-rule="evenodd" /></svg>`;
+                    // saveToRagButton.disabled = true; // Optionally keep disabled
+                } else {
+                    saveToRagStatusEl.textContent = `Ошибка сохранения: ${resultJson.detail || response.statusText || 'Неизвестная ошибка сервера'}`;
+                    saveToRagStatusEl.className = 'mt-2 text-xs text-center text-red-600';
+                    saveToRagButton.disabled = false; 
+                    saveToRagButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-4 h-4 mr-2"><path fill-rule="evenodd" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5H8.75v4.5A.75.75 0 0 1 7.25 13V8.5H2.75a.75.75 0 0 1 0-1.5h4.5V2.75A.75.75 0 0 1 8 2Z" clip-rule="evenodd" /></svg> Сохранить этот результат в базу знаний`;
+                }
+            } catch (error) {
+                console.error('Error saving to RAG:', error);
+                saveToRagStatusEl.textContent = 'Сетевая ошибка или ошибка ответа сервера при сохранении.';
+                saveToRagStatusEl.className = 'mt-2 text-xs text-center text-red-600';
+                saveToRagButton.disabled = false;
+                saveToRagButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-4 h-4 mr-2"><path fill-rule="evenodd" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5H8.75v4.5A.75.75 0 0 1 7.25 13V8.5H2.75a.75.75 0 0 1 0-1.5h4.5V2.75A.75.75 0 0 1 8 2Z" clip-rule="evenodd" /></svg> Сохранить этот результат в базу знаний`;
+            }
+        }
+
+        function resetInterface() {
+            // Hide error messages
+            errorMessageDiv.classList.add('hidden');
+            errorText.textContent = '';
+
+            // Reset coordination/clarification sections
+            coordinationSection.classList.add('hidden');
+            if(outputElements.coordination) outputElements.coordination.innerHTML = '';
+            if(outputElements.queryEnhancement) outputElements.queryEnhancement.innerHTML = '';
+            if(outputElements.clarification) outputElements.clarification.innerHTML = '';
+            
+            // Reset RAG UI elements
+            ragStatusSection.classList.add('hidden');
+            ragStatusMessageEl.textContent = '';
+            ragStatusMessageEl.className = 'p-4 text-sm rounded-lg'; 
+            saveToRagContainer.classList.add('hidden');
+            saveToRagButton.disabled = false;
+            // Corrected SVG to "plus" icon for initial save state
+            saveToRagButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="w-4 h-4 mr-2"><path fill-rule="evenodd" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5H8.75v4.5A.75.75 0 0 1 7.25 13V8.5H2.75a.75.75 0 0 1 0-1.5h4.5V2.75A.75.75 0 0 1 8 2Z" clip-rule="evenodd" /></svg> Сохранить этот результат в базу знаний`;
+            saveToRagStatusEl.textContent = '';
+            currentRagComponents = null;
+
+            // Reset step indicators and outputs
+            ['step-agent1', 'step-agent2', 'step-agent3', 'step-agent4', 'step-anomaly'].forEach(stepId => {
+                const stepElement = document.getElementById(stepId);
+                if (stepElement) {
+                    stepElement.className = 'step-item p-6 border-l-4 step-pending transition-all duration-300';
+                    if (stepId === 'step-anomaly') stepElement.classList.add('hidden'); 
+                    const circle = stepElement.querySelector('.flex.items-center.space-x-2 > div.w-2.h-2');
+                    if (circle) {
+                         circle.className = 'w-2 h-2 bg-gray-400 rounded-full';
+                         circle.innerHTML = ''; // Clear any previous icon like checkmark
+                    }
+                }
+            });
+
+            const outputIdsToReset = ['rephrasedPrompt', 'plan', 'sql', 'sqlValidation', 'execution', 'anomaly'];
+            outputIdsToReset.forEach(id => {
+                if (outputElements[id]) {
+                     if (id === 'sqlValidation') {
+                        outputElements[id].innerHTML = ''; // Specific reset for validation log
+                     } else {
+                        outputElements[id].innerHTML = '<div class="text-sm text-gray-600">Ожидание...</div>';
+                     }
+                }
+            });
+            
+            if(outputElements.sqlError) {
+                outputElements.sqlError.classList.add('hidden');
+                const sqlErrorTextDiv = outputElements.sqlError.querySelector('div');
+                if (sqlErrorTextDiv) sqlErrorTextDiv.textContent = '';
+            }
+            
+            if(outputElements.finalAnswer) {
+                outputElements.finalAnswer.innerHTML = `
+                    <div class="text-center py-8">
+                        <svg class="w-12 h-12 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                        <p class="text-gray-500">Здесь появится результат анализа</p>
+                    </div>`;
+            }
+        }
+
+        function displaySqlResultsTable(resultsData, rowCount) {
+            const executionOutputEl = outputElements.execution;
+            if (!executionOutputEl) return;
+
+            if (!resultsData || resultsData.length === 0) {
+                executionOutputEl.innerHTML = createSuccessMessage(`Запрос выполнен, но данные не возвращены.`);
+                return;
+            }
+
+            let tableHtml = `<div class="mt-2 text-sm text-green-600">Данные успешно получены. Строк: ${rowCount}.</div>`;
+            
+            const displayLimit = 50;
+            const dataToDisplay = resultsData.slice(0, displayLimit);
+
+            tableHtml += `<div class="mt-2 overflow-x-auto rounded-lg border border-gray-200">`;
+            tableHtml += `<table class="min-w-full divide-y divide-gray-200 text-xs">`;
+            
+            // Table Header
+            tableHtml += `<thead class="bg-gray-50"><tr>`;
+            const headers = Object.keys(dataToDisplay[0]);
+            headers.forEach(header => {
+                tableHtml += `<th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">${header}</th>`;
+            });
+            tableHtml += `</tr></thead>`;
+
+            // Table Body
+            tableHtml += `<tbody class="bg-white divide-y divide-gray-200">`;
+            dataToDisplay.forEach(row => {
+                tableHtml += `<tr>`;
+                headers.forEach(header => {
+                    const value = row[header] === null || typeof row[header] === 'undefined' ? 'NULL' : String(row[header]);
+                    tableHtml += `<td class="px-3 py-2 whitespace-nowrap text-gray-700">${value}</td>`;
+                });
+                tableHtml += `</tr>`;
+            });
+            tableHtml += `</tbody>`;
+            tableHtml += `</table>`;
+            tableHtml += `</div>`;
+
+            if (rowCount > displayLimit) {
+                tableHtml += `<div class="mt-2 text-xs text-gray-500">Отображаются первые ${displayLimit} из ${rowCount} строк.</div>`;
+            }
+
+            executionOutputEl.innerHTML = tableHtml;
+        }
+
+    </script>
+</body>
+</html>
