@@ -448,7 +448,8 @@ def generate_anomaly_description(anomalies, user_prompt):
 # АГЕНТ 6: ГЕНЕРАТОР ОТВЕТА
 # ==============================================================================
 
-def agent4_answer_generator(sql_result_df, initial_user_prompt: str, query_plan: str, sql_query: str, rag_context: dict = None):
+def agent4_answer_generator(sql_result_df, initial_user_prompt: str, query_plan: str, sql_query: str, 
+                            anomaly_results: dict = None, trend_results: dict = None, rag_context: dict = None):
     """Генерирует текстовый ответ на основе результатов SQL и первоначального запроса."""
     rag_guidance = ""
     if rag_context and isinstance(rag_context, dict) and rag_context.get('final_answer'):
