@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: ./app
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - ./app/.env
